@@ -76,7 +76,7 @@ class MI32_keyGen_UI
 
     var token, rev_MAC, MAC
     var current_func, next_func
-    var msg, ownKey, shallSendKey, bindKey
+    var msg, ownKey, bindKey
     var receive_frames, received_data, send_data, remote_info, remote_key, did_ct
     var buf, webCmd
     var log_reader, log_level
@@ -117,7 +117,6 @@ class MI32_keyGen_UI
         ble.conn_cb(cbp,self.buf)
         self.current_func = self.wait
         self.ownKey = ""
-        self.shallSendKey=false
         self.log_reader = tasmota_log_reader()
         self.log_level = 2
         var line = self.log_reader.get_log(self.log_level)
@@ -131,7 +130,6 @@ class MI32_keyGen_UI
         if args == nil
             args = ""
         end
-        # var _args = string.format("[\"%s\"]",args)
         self.webCmd = string.format("{\"CMD\":[\"%s\",\"%s\"]}",cmd,args) # cmd is a JS function name with args
         print("Call JS function: "+cmd+"("+args+")")
     end
@@ -214,7 +212,7 @@ class MI32_keyGen_UI
         else
             print("Mi unknown response...")
         end
-        self.current_func = /->self.wait()
+        self.current_func = /->self.comm()
     end
 
     def getFrm()
@@ -354,9 +352,18 @@ class MI32_keyGen_UI
         self.then(/->self.wait())
     end
     def comm()
-        mi.state = mi.COMM
-        print("Comm")
-        self.then(/->self.wait())
+        print("Pairing finished!!")
+        ble.run(5)
+        self.then(/->self.setKey())
+    end
+    def setKey()
+        if self.bindKey == nil
+            return
+        else
+            var keyMAC = self.bindKey + self.MAC
+            tasmota.cmd("mi32key "+keyMAC)
+            self.then(/->self.wait())
+        end
     end
 
     def recReady()
@@ -371,12 +378,16 @@ class MI32_keyGen_UI
         elif(mi.state==mi.SEND_DID)
             self.call_JS_func("mkShKey",self.received_data.tohex()) # call JS function with args
             self.then(/->self.sendDID())
-        elif(mi.state==mi.CONFIRM)
-            self.then(/->self.confirm())
-        elif(mi.state==mi.COMM)
-            self.then(/->self.comm())
+        # elif(mi.state==mi.CONFIRM)
+        #     self.then(/->self.confirm())
+        # elif(mi.state==mi.COMM)
+        #     self.then(/->self.comm())
         end     
         self.sendData(mi.RCV_OK,mi.AVDTP)
+    end
+
+    def saveCfg()
+        tasmota.cmd("mi32cfg")
     end
  
   # create a method for adding a button to the main menu
@@ -447,10 +458,10 @@ class MI32_keyGen_UI
                         "function getBindKey(){update('bkey='+bindKey);}"
                         "function deriveKey(){"
                         "var derived_key = sjcl.codec.hex.fromBits(sjcl.misc.hkdf(sjcl.codec.hex.toBits(sharedKey), 8 * 64, null, 'mible-setup-info', sjcl.hash['sha256']));"
-                        "token = derived_key.substring(0, 24);var bindkey= derived_key.substring(24, 56);console.log(token,bindkey);"
-                        "bindKey = derived_key.substring(56, 88);"
-                        "var device_new_id ='00626c742e332e31323976' + '010203040506' + '415443';"
-                        "mi_write_did = sjcl.codec.hex.fromBits(sjcl.mode.ccm.encrypt(new sjcl.cipher.aes(sjcl.codec.hex.toBits(bindKey)), sjcl.codec.hex.toBits(devID), sjcl.codec.hex.toBits('101112131415161718191A1B'), sjcl.codec.hex.toBits('6465764944'), 32));"
+                        "token=derived_key.substring(0, 24);var bindkey= derived_key.substring(24, 56);console.log(token,bindkey);"
+                        "bindKey=derived_key.substring(24,56);eb('key').innerHTML=bindKey;"
+                        "var _keyA=derived_key.substring(56,88);"
+                        "mi_write_did = sjcl.codec.hex.fromBits(sjcl.mode.ccm.encrypt(new sjcl.cipher.aes(sjcl.codec.hex.toBits(_keyA)), sjcl.codec.hex.toBits(devID), sjcl.codec.hex.toBits('101112131415161718191A1B'), sjcl.codec.hex.toBits('6465764944'), 32));"
                         "update('didCT='+mi_write_did);}"
     var script_2     =  "</script>"
                         # var cr=xr.response.replace(/bytes\\(\\'([^']+)\\'\\)/g,'$1');
@@ -479,9 +490,6 @@ class MI32_keyGen_UI
         if self.webCmd!=''
             rsp = self.webCmd
             self.webCmd = ''
-        elif self.shallSendKey==true
-            self.shallSendKey=false
-            rsp = string.format("{\"KEY\":\"%s\"}",self.key)
         else
             var line = self.log_reader.get_log(self.log_level)
             if line == nil return rsp end  # no more logs
@@ -500,11 +508,10 @@ class MI32_keyGen_UI
         self.did_ct = bytes(webserver.arg("didCT"))
         print("DID CT -> ESP:",self.did_ct)
     elif webserver.has_arg("bkey")
-        self.bindKey = bytes(webserver.arg("bkey"))
+        self.bindKey = webserver.arg("bkey")
         print("Bind Key -> ESP:",self.bindKey)
     elif webserver.has_arg("save")
         self.saveCfg()
-        self.shallSendKey=false
         print("Saving mi32cfg.")
     elif webserver.has_arg("disc")
         ble.run(5)

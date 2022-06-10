@@ -80,7 +80,7 @@ class MI32_keyGen_UI
     var receive_frames, received_data, send_data, remote_info, remote_key, did_ct
     var buf, webCmd
     var log_reader, log_level
-    var chunks, chunkIdx
+    var chunks, chunkIdx, lastChunk
 
     def copyBufToPos(target,pos,source)
         for i:0..size(source)-1
@@ -133,6 +133,7 @@ class MI32_keyGen_UI
         end
         var _args = string.format("[\"%s\"]",args)
         self.webCmd = string.format("{\"CMD\":[\"%s\",%s]}",cmd,_args) # cmd is a JS function name with args as an array
+        print("Call JS function: "+cmd+"("+args+")")
     end
 
     def every_50ms()
@@ -170,25 +171,27 @@ class MI32_keyGen_UI
     def sendChunks()
         import string
         if self.chunks>self.chunkIdx
-            var from = 2+(self.chunkIdx*18)
-            var to = 2+(self.chunkIdx*18)+18
+            var from = self.chunkIdx*18
+            var to = (self.chunkIdx*18)+17
             if self.lastChunk!=0 && self.chunkIdx == self.chunks-1
-                to = 2+(self.chunkIdx*18)+self.lastChunk
+                to = self.chunkIdx*18+self.lastChunk
             end
-            var chunk = self.buf[from..to]
-            var idx = string(self.chunkIdx+1)
-            var packet = bytes(idx+"00")+chunk
+            var chunk = self.send_data[from..to]
+            var idx = str(self.chunkIdx+1)
+            var packet = bytes('0'+idx+"00")+chunk
+            self.sendData(packet,mi.AVDTP)
             self.chunkIdx+=1
             self.then(/->self.sendChunks())
-            self.sendData(packet,mi.AVDTP)
+            print(packet)
         else
-            self.then(/->self.wait())
+        print("Packet complete!")
+        self.then(/->self.wait())
         end
     end
 
     def write_parcel(ch, data)
         var chunk_size=18
-        var length = size(self.received_data)
+        var length = size(data)
         self.chunks = length/chunk_size
         self.lastChunk = length-self.chunks*chunk_size
         if self.lastChunk!=0
@@ -242,22 +245,27 @@ class MI32_keyGen_UI
     end
 
     def handleSend()
-        print("Will send data to sensor.")
         var frm = self.getFrm()
         if frm != 0
+            self.current_func = /->self.wait() #???
+            print(frm)
             return
         end
-        if self.buf[3..self.buf[0]] == mi.RCV_RDY
+        print("Will send data to sensor.")
+        if self.buf[1..self.buf[0]] == mi.RCV_RDY
             print("Mi ready to receive key")
-            self.ble.write_parcel(mi.AVDTP, self.send_data)
-        elif self.buf[3..self.buf[0]] == mi.RCV_TOUT
+            self.write_parcel(mi.AVDTP, self.send_data)
+        elif self.buf[1..self.buf[0]] == mi.RCV_TOUT
             print("Mi sent RCV timeout.")
-        elif self.buf[3..self.buf[0]] == mi.RCV_ERR
+        elif self.buf[1..self.buf[0]] == mi.RCV_ERR
             print("Mi sent some RCV error?")
-        elif self.buf[3..self.buf[0]] == mi.RCV_OK
+        elif self.buf[1..self.buf[0]] == mi.RCV_OK
             print("Mi confirmed key receive")
             mi.state+=1
             print("Next state:",mi.state)
+            self.current_func = /->self.wait()
+        else
+            print(self.buf[1..self.buf[0]])
         end
     end
 
@@ -266,16 +274,18 @@ class MI32_keyGen_UI
     end
 
     def handleNotif()
-        if mi.state == mi.RECV_INFO || mi.state == mi.RECV_KEY
+        if (mi.state == mi.RECV_INFO || mi.state == mi.RECV_KEY)
             self.current_func = /->self.handleRec()
-        end
-        if mi.state == mi.SEND_KEY mi.state == mi.SEND_DID
+        elif mi.state == mi.SEND_KEY
+            self.send_data = self.ownKey
+            print(self.send_data)
             self.current_func = /->self.handleSend()
-        end
-        if mi.state == mi.CONFIRM
+        elif mi.state == mi.SEND_DID
+            self.send_data = self.did_ct
+            self.current_func = /->self.handleSend()
+        elif mi.state == mi.CONFIRM
             self.current_func = /->self.handleConfirm()
-        end
-        if mi.state == mi.COMM
+        elif mi.state == mi.COMM
             self.current_func = /->self.handleCOMM()
         end
     end
@@ -311,7 +321,6 @@ class MI32_keyGen_UI
     def sendKey1()
         print("Send our Key ...")
         self.remote_info = self.received_data
-        self.send_data = self.ownKey
         self.sendData(mi.CMD_SET_KEY,mi.UPNP)
         self.then(/->self.sendKey2())
     end
@@ -350,7 +359,7 @@ class MI32_keyGen_UI
         if(mi.state==mi.SEND_KEY)
             self.then(/->self.sendKey1())
         elif(mi.state==mi.SEND_DID)
-            self.call_JS_func("mShKey",self.received_data.tohex()) # call JS function with args
+            self.call_JS_func("mkShKey",self.received_data.tohex()) # call JS function with args
             self.then(/->self.sendDID())
         elif(mi.state==mi.CONFIRM)
             self.then(/->self.confirm())
@@ -418,7 +427,7 @@ class MI32_keyGen_UI
                         "}catch{log(r.substring(0,r.length-1));}"
                         "};};xr.open('GET','/mi32_key?'+cmnd,true);xr.send();};setInterval(update,250);"
     var script_1     =  "function save(){update('save=1');}"
-                        "function genOwnKey(){if(ownKey==undefined){ownKey=sjcl.ecc.elGamal.generateKeys(256,10);}update('ownKey='+'04'+ownKey.pub.serialize().point);}"
+                        "function genOwnKey(){if(ownKey==undefined){ownKey=sjcl.ecc.elGamal.generateKeys(256,10);}update('ownKey='+ownKey.pub.serialize().point);}"
                         "function mkShKey(k){var _pk=new sjcl.ecc.elGamal.publicKey(sjcl.ecc.curves.c256, sjcl.ecc.curves['c256'].fromBits(sjcl.codec.hex.toBits(k.substring(2))));"
                         "var _k = sj_key.sec.dhJavaEc(_pk);sharedKey='';for(var el of _key){sharedKey+=('0000000'+((el)>>>0).toString(16)).substr(-8);}console.log(sharedKey);deriveKey();}"
                         "function log(msg){if(msg[0]=='<'){return;}let n=Number(msg.substring(0,12).replace(/[:,]/g, ''));if(n<=lastLog){return;}lastLog=n;let l=eb('log');l.value+=msg+'\\n';l.scrollTop=l.scrollHeight;}"
@@ -472,10 +481,10 @@ class MI32_keyGen_UI
         print("Connect requested from WebGUI.")
         self.pair(mac)
     elif webserver.has_arg("ownKey")
-        self.ownKey = webserver.arg("ownKey")
+        self.ownKey = bytes(webserver.arg("ownKey"))
         print("Key generated -> ESP:",self.ownKey)
     elif webserver.has_arg("didCT")
-        self.did_ct = webserver.arg("didCT")
+        self.did_ct = bytes(webserver.arg("didCT"))
         print("DID CT -> ESP:",self.did_ct)
     elif webserver.has_arg("save")
         self.saveCfg()

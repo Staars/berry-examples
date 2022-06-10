@@ -76,7 +76,7 @@ class MI32_keyGen_UI
 
     var token, rev_MAC, MAC
     var current_func, next_func
-    var msg, ownKey, shallSendKey
+    var msg, ownKey, shallSendKey, bindKey
     var receive_frames, received_data, send_data, remote_info, remote_key, did_ct
     var buf, webCmd
     var log_reader, log_level
@@ -131,8 +131,8 @@ class MI32_keyGen_UI
         if args == nil
             args = ""
         end
-        var _args = string.format("[\"%s\"]",args)
-        self.webCmd = string.format("{\"CMD\":[\"%s\",%s]}",cmd,_args) # cmd is a JS function name with args as an array
+        # var _args = string.format("[\"%s\"]",args)
+        self.webCmd = string.format("{\"CMD\":[\"%s\",\"%s\"]}",cmd,args) # cmd is a JS function name with args
         print("Call JS function: "+cmd+"("+args+")")
     end
 
@@ -201,7 +201,8 @@ class MI32_keyGen_UI
         self.sendChunks()
     end
 
-    def confirm_handler(frm)
+    def handleConfirm()
+        var frm = self.getFrm()
         if frm == 0x11
             print("Mi authentication successful!")
         elif frm == 0x12
@@ -213,6 +214,7 @@ class MI32_keyGen_UI
         else
             print("Mi unknown response...")
         end
+        self.current_func = /->self.wait()
     end
 
     def getFrm()
@@ -220,7 +222,7 @@ class MI32_keyGen_UI
         if self.buf[0] > 2
             frm += 0x100*self.buf[2]
         end
-        print("Frame :",frm)
+        # print("Frame :",frm)
         return frm
     end
     
@@ -263,6 +265,11 @@ class MI32_keyGen_UI
             print("Mi confirmed key receive")
             mi.state+=1
             print("Next state:",mi.state)
+            if mi.state==mi.CONFIRM
+                # print("Next step confirm ....")
+                self.current_func = /->self.confirm()
+                return
+            end
             self.current_func = /->self.wait()
         else
             print(self.buf[1..self.buf[0]])
@@ -336,10 +343,11 @@ class MI32_keyGen_UI
         self.send_data = self.did_ct
         print("Send shared key to device.")
         self.sendData(mi.CMD_SEND_DID,mi.AVDTP)
+        self.call_JS_func('getBindKey')
         self.then(/->self.wait())
     end
     def confirm()
-        print("confirm")
+        print("Ask device for confirmation.")
         self.sendData(mi.CMD_AUTH,mi.UPNP)
         self.then(/->self.wait())
     end
@@ -419,7 +427,7 @@ class MI32_keyGen_UI
   def upl_js()
     import webserver
     var script_start =  "<script>"
-                        "var ownKey,sharedKey,lastCmd,lastLog;"
+                        "var ownKey,sharedKey,token,bindKey,lastCmd,lastLog;"
                         "function update(cmnd){if(!cmnd){cmnd='loop=1'}var xr=new XMLHttpRequest();xr.onreadystatechange=()=>{if(xr.readyState==4&&xr.status==200){"
                         "let r=xr.response;try{let j=JSON.parse(r);"
                         "if('KEY' in j){eb('key').innerHTML='Key: '+j.KEY}"
@@ -428,16 +436,18 @@ class MI32_keyGen_UI
                         "};};xr.open('GET','/mi32_key?'+cmnd,true);xr.send();};setInterval(update,250);"
     var script_1     =  "function save(){update('save=1');}"
                         "function genOwnKey(){if(ownKey==undefined){ownKey=sjcl.ecc.elGamal.generateKeys(256,10);}update('ownKey='+ownKey.pub.serialize().point);}"
-                        "function mkShKey(k){var _pk=new sjcl.ecc.elGamal.publicKey(sjcl.ecc.curves.c256, sjcl.ecc.curves['c256'].fromBits(sjcl.codec.hex.toBits(k.substring(2))));"
-                        "var _k = sj_key.sec.dhJavaEc(_pk);sharedKey='';for(var el of _key){sharedKey+=('0000000'+((el)>>>0).toString(16)).substr(-8);}console.log(sharedKey);deriveKey();}"
+                        "function mkShKey(k){console.log('Got public device key:',k);var _pk=new sjcl.ecc.elGamal.publicKey(sjcl.ecc.curves.c256, sjcl.ecc.curves['c256'].fromBits(sjcl.codec.hex.toBits(k)));"
+                        "var _k = ownKey.sec.dhJavaEc(_pk);sharedKey='';for(var el of _k){sharedKey+=('0000000'+((el)>>>0).toString(16)).substr(-8);}console.log(sharedKey);deriveKey();}"
                         "function log(msg){if(msg[0]=='<'){return;}let n=Number(msg.substring(0,12).replace(/[:,]/g, ''));if(n<=lastLog){return;}lastLog=n;let l=eb('log');l.value+=msg+'\\n';l.scrollTop=l.scrollHeight;}"
                         "function pair(){update('pair='+eb('sens').value);eb('log').value+='Start pairing with: '+eb('sens').value+'\\n';}"
                         "function disc(){update('disc=1')}"
+                        "function getBindKey(){update('bkey='+bindKey);}"
                         "function deriveKey(){"
-                        "var derived_key = sjcl.codec.hex.fromBits(sjcl.misc.hkdf(sjcl.codec.hex.toBits(shared_key), 8 * 64, null, 'mible-setup-info', sjcl.hash['sha256']));"
-                        "var token = derived_key.substring(0, 24);var bindkey= derived_key.substring(24, 56);console.log(token,bindkey);"
-                        "var mi_bind_A = derived_key.substring(56, 88);"
-                        "mi_write_did = sjcl.codec.hex.fromBits(sjcl.mode.ccm.encrypt(new sjcl.cipher.aes(sjcl.codec.hex.toBits(mi_bind_A)), sjcl.codec.hex.toBits(device_new_id), sjcl.codec.hex.toBits('101112131415161718191A1B'), sjcl.codec.hex.toBits('6465764944'), 32));"
+                        "var derived_key = sjcl.codec.hex.fromBits(sjcl.misc.hkdf(sjcl.codec.hex.toBits(sharedKey), 8 * 64, null, 'mible-setup-info', sjcl.hash['sha256']));"
+                        "token = derived_key.substring(0, 24);var bindkey= derived_key.substring(24, 56);console.log(token,bindkey);"
+                        "bindKey = derived_key.substring(56, 88);"
+                        "var device_new_id ='00626c742e332e31323976' + '010203040506' + '415443';"
+                        "mi_write_did = sjcl.codec.hex.fromBits(sjcl.mode.ccm.encrypt(new sjcl.cipher.aes(sjcl.codec.hex.toBits(bindKey)), sjcl.codec.hex.toBits(device_new_id), sjcl.codec.hex.toBits('101112131415161718191A1B'), sjcl.codec.hex.toBits('6465764944'), 32));"
                         "update('didCT='+mi_write_did);}"
     var script_2     =  "</script>"
                         # var cr=xr.response.replace(/bytes\\(\\'([^']+)\\'\\)/g,'$1');
@@ -486,6 +496,9 @@ class MI32_keyGen_UI
     elif webserver.has_arg("didCT")
         self.did_ct = bytes(webserver.arg("didCT"))
         print("DID CT -> ESP:",self.did_ct)
+    elif webserver.has_arg("bkey")
+        self.bindKey = bytes(webserver.arg("bkey"))
+        print("Bind Key -> ESP:",self.bindKey)
     elif webserver.has_arg("save")
         self.saveCfg()
         self.shallSendKey=false

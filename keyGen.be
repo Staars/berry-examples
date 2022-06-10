@@ -326,8 +326,10 @@ class MI32_keyGen_UI
         self.sendData(mi.CMD_GET_INFO,mi.UPNP)
     end
     def sendKey1()
+        var ri = self.received_data
+        var did = ri[4..size(ri)-1].tohex()
+        self.call_JS_func('setDevID',did)
         print("Send our Key ...")
-        self.remote_info = self.received_data
         self.sendData(mi.CMD_SET_KEY,mi.UPNP)
         self.then(/->self.sendKey2())
     end
@@ -427,11 +429,11 @@ class MI32_keyGen_UI
   def upl_js()
     import webserver
     var script_start =  "<script>"
-                        "var ownKey,sharedKey,token,bindKey,lastCmd,lastLog;"
+                        "var ownKey,sharedKey,token,bindKey,devID,lastLog;"
                         "function update(cmnd){if(!cmnd){cmnd='loop=1'}var xr=new XMLHttpRequest();xr.onreadystatechange=()=>{if(xr.readyState==4&&xr.status==200){"
                         "let r=xr.response;try{let j=JSON.parse(r);"
                         "if('KEY' in j){eb('key').innerHTML='Key: '+j.KEY}"
-                        "else if('CMD' in j){console.log(j.CMD);lastCmd=j.CMD;window[j.CMD[0]](j.CMD[1]);}"
+                        "else if('CMD' in j){console.log(j.CMD);window[j.CMD[0]](j.CMD[1]);}"
                         "}catch{log(r.substring(0,r.length-1));}"
                         "};};xr.open('GET','/mi32_key?'+cmnd,true);xr.send();};setInterval(update,250);"
     var script_1     =  "function save(){update('save=1');}"
@@ -441,13 +443,14 @@ class MI32_keyGen_UI
                         "function log(msg){if(msg[0]=='<'){return;}let n=Number(msg.substring(0,12).replace(/[:,]/g, ''));if(n<=lastLog){return;}lastLog=n;let l=eb('log');l.value+=msg+'\\n';l.scrollTop=l.scrollHeight;}"
                         "function pair(){update('pair='+eb('sens').value);eb('log').value+='Start pairing with: '+eb('sens').value+'\\n';}"
                         "function disc(){update('disc=1')}"
+                        "function setDevID(i){devID=i;}"
                         "function getBindKey(){update('bkey='+bindKey);}"
                         "function deriveKey(){"
                         "var derived_key = sjcl.codec.hex.fromBits(sjcl.misc.hkdf(sjcl.codec.hex.toBits(sharedKey), 8 * 64, null, 'mible-setup-info', sjcl.hash['sha256']));"
                         "token = derived_key.substring(0, 24);var bindkey= derived_key.substring(24, 56);console.log(token,bindkey);"
                         "bindKey = derived_key.substring(56, 88);"
                         "var device_new_id ='00626c742e332e31323976' + '010203040506' + '415443';"
-                        "mi_write_did = sjcl.codec.hex.fromBits(sjcl.mode.ccm.encrypt(new sjcl.cipher.aes(sjcl.codec.hex.toBits(bindKey)), sjcl.codec.hex.toBits(device_new_id), sjcl.codec.hex.toBits('101112131415161718191A1B'), sjcl.codec.hex.toBits('6465764944'), 32));"
+                        "mi_write_did = sjcl.codec.hex.fromBits(sjcl.mode.ccm.encrypt(new sjcl.cipher.aes(sjcl.codec.hex.toBits(bindKey)), sjcl.codec.hex.toBits(devID), sjcl.codec.hex.toBits('101112131415161718191A1B'), sjcl.codec.hex.toBits('6465764944'), 32));"
                         "update('didCT='+mi_write_did);}"
     var script_2     =  "</script>"
                         # var cr=xr.response.replace(/bytes\\(\\'([^']+)\\'\\)/g,'$1');

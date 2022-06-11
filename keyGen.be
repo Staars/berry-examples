@@ -1,9 +1,14 @@
 #######################################################################
 # MI bind key generator for ESP32 - ESP32C3 - ESP32S3
 #
+# Port of https://github.com/dnandha/miauth 
+#       & https://github.com/atc1441/atc1441.github.io
+#
 # use : `import keyGen`
 #
 # Provides BLE bindings and a Web UI
+#
+# Many Thanks to dnandha, danielkucera, atc1441
 #######################################################################
 
 var keyGen = module('keyGen')
@@ -39,19 +44,14 @@ class MI32_Extended : MI32
     static CONFIRM = 4
     static COMM = 5
 
-
     var state
 
     def supported(name)
-        if  name == "LYWSD03" || name == "MHOC401"
+        if  name == "LYWSD03" || name == "MHOC401" ||
+            name == "MJYD2S" || name == "MCCGQ02" || name == "SJWS01L"
             return true
         end
         return false
-    end
-
-    def addKey()
-        var keyMAC = self.key + self.MAC
-        tasmota.cmd("mi32key "+keyMAC)
     end
 
     def saveCfg()
@@ -82,18 +82,51 @@ class MI32_keyGen_UI
     var log_reader, log_level
     var chunks, chunkIdx, lastChunk
 
+    def init()
+        var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
+        self.buf = bytes(-64)
+        ble.conn_cb(cbp,self.buf)
+        self.current_func = self.wait
+        self.ownKey = ""
+        self.log_reader = tasmota_log_reader()
+        self.log_level = 2
+        var line = self.log_reader.get_log(self.log_level)
+        while line != nil
+            line = self.log_reader.get_log(self.log_level)
+        end  # purge log
+    end
+
+    def every_50ms()
+        self.current_func()
+    end
+
+    def cb(error,op,uuid)
+        import string
+        # print("BLE Op:",op,"UUID:",uuid)
+        if error == 0
+            if op == 103
+                self.handleNotif()
+                return
+            else
+                self.current_func = self.next_func # fulfil our promise ;)
+            end
+            return
+        end
+        if op == 5
+            print("Did successfully disconnect.")
+        elif error < 3
+            print("BLE error, did disconnect!")
+        elif error > 2
+            print("BLE error, will disconnect!")
+            ble.run(5) # disconnect
+        end
+    end
+
+    # BLE helper gunctions
     def copyBufToPos(target,pos,source)
         for i:0..size(source)-1
             target[pos+i] = source[i]
         end
-    end
-
-    def reverseMac(mac)
-        var reMAC = bytes(-6)
-        for i:0..5
-            reMAC[i] = mac[5-i]
-        end
-        return reMAC
     end
 
     def sendData(data,chr)
@@ -111,61 +144,28 @@ class MI32_keyGen_UI
         return ble.run(3,1)
     end
 
-    def init()
-        var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
-        self.buf = bytes(-64)
-        ble.conn_cb(cbp,self.buf)
-        self.current_func = self.wait
-        self.ownKey = ""
-        self.log_reader = tasmota_log_reader()
-        self.log_level = 2
-        var line = self.log_reader.get_log(self.log_level)
-        while line != nil
-            line = self.log_reader.get_log(self.log_level)
-        end  # purge log
-    end
-
+    # call Javascript function with args
     def call_JS_func(cmd,args)
         import string
         if args == nil
             args = ""
         end
-        self.webCmd = string.format("{\"CMD\":[\"%s\",\"%s\"]}",cmd,args) # cmd is a JS function name with args
+        self.webCmd = string.format("{\"CMD\":[\"%s\",\"%s\"]}",cmd,args) # will be send by our AJAX handler, if self.webCmd is not empty
         print("Call JS function: "+cmd+"("+args+")")
     end
 
-    def every_50ms()
-    # def every_second()
-        self.current_func()
-    end
-
+    # our little promise implementation
     def wait()
         # do nothing
     end
 
     def then(func)
-        # save function pointers for callback
+        # save function pointers for callback, typically expecting a closure
         self.next_func = func
         self.current_func = self.wait
     end
-    
-    def pair(MAC)
-        import string
-        self.MAC = MAC
-        self.rev_MAC = self.reverseMac(bytes(MAC))
-        print("Try to connect to: ",MAC)
-        ble.set_MAC(bytes(MAC),0)
-        mi.state = mi.INIT
-        self.call_JS_func("genOwnKey")
-        self.then(/->self.func1())
-        self.subscribe(mi.UPNP)
-    end
-    def func1()
-        print("Did connect ...")
-        self.then(/->self.getInfo())
-        self.subscribe(mi.AVDTP)  
-    end
 
+    # helper and handler function, mostly called from notification callbacks
     def sendChunks()
         import string
         if self.chunks>self.chunkIdx
@@ -274,10 +274,6 @@ class MI32_keyGen_UI
         end
     end
 
-    def handleCOMM()
-        print("Pairing complete!!") # not implemented yet
-    end
-
     def handleNotif()
         if (mi.state == mi.RECV_INFO || mi.state == mi.RECV_KEY)
             self.current_func = /->self.handleRec()
@@ -290,35 +286,34 @@ class MI32_keyGen_UI
             self.current_func = /->self.handleSend()
         elif mi.state == mi.CONFIRM
             self.current_func = /->self.handleConfirm()
-        elif mi.state == mi.COMM
-            self.current_func = /->self.handleCOMM()
+        # elif mi.state == mi.COMM
+        #     self.current_func = /->self.handleCOMM()
         end
     end
 
-    def cb(error,op,uuid)
+    # entry point, started from the web UI
+    def pair(MAC) 
         import string
-        # print("BLE Op:",op,"UUID:",uuid)
-        if error == 0
-            if op == 103
-                self.handleNotif()
-                return
-            else
-                self.current_func = self.next_func # fulfil our promise ;)
-            end
-            return
-        end
-        if op == 5
-            print("Did successfully disconnect.")
-        elif error < 3
-            print("BLE error, did disconnect!")
-        elif error > 2
-            print("BLE error, will disconnect!")
-            ble.run(5) # disconnect
-        end
+        self.MAC = MAC
+        print("Try to connect to: ",MAC)
+        ble.set_MAC(bytes(MAC),0)
+        mi.state = mi.INIT
+        self.call_JS_func("genOwnKey")
+        self.then(/->self.func1())
+        self.subscribe(mi.UPNP)
+    end
+
+    # The next functions are some kind of sequence, that get called from 
+    # notification callbacks most of the time
+
+    def func1()
+        print("Did connect ...")
+        self.then(/->self.getInfo())
+        self.subscribe(mi.AVDTP)  
     end
 
     def getInfo()
-        print("Ask sensor for info ...")
+        print("Ask sensor for dev ID.")
         mi.state = mi.RECV_INFO
         self.then(/->self.wait())
         self.sendData(mi.CMD_GET_INFO,mi.UPNP)
@@ -362,15 +357,18 @@ class MI32_keyGen_UI
         else
             var keyMAC = self.bindKey + self.MAC
             tasmota.cmd("mi32key "+keyMAC)
+            print("Press SAVE button to update mi32cfg file.")
             self.then(/->self.wait())
         end
     end
 
+    # semi generic response functions 
     def recReady()
         print("Receive ready")
         self.then(/->self.wait())
         self.sendData(mi.RCV_RDY,mi.AVDTP)
     end
+
     def recOK()
         print("Receive okay")
         if(mi.state==mi.SEND_KEY)
@@ -378,16 +376,8 @@ class MI32_keyGen_UI
         elif(mi.state==mi.SEND_DID)
             self.call_JS_func("mkShKey",self.received_data.tohex()) # call JS function with args
             self.then(/->self.sendDID())
-        # elif(mi.state==mi.CONFIRM)
-        #     self.then(/->self.confirm())
-        # elif(mi.state==mi.COMM)
-        #     self.then(/->self.comm())
         end     
         self.sendData(mi.RCV_OK,mi.AVDTP)
-    end
-
-    def saveCfg()
-        tasmota.cmd("mi32cfg")
     end
  
   # create a method for adding a button to the main menu
@@ -418,7 +408,7 @@ class MI32_keyGen_UI
     webserver.content_send("</select><br><br>")
     if num>0
         webserver.content_send("<button onclick='pair()'>Generate Key</button><br>")
-        webserver.content_send("<br><button onclick='disc()'>Disconnect</button><br>")
+        webserver.content_send("<br><button onclick='disc()'>Disconnect</button><br><p id='key'></p>")
     end
 
   end
@@ -430,28 +420,28 @@ class MI32_keyGen_UI
 
   def upl_css()
     import webserver
-    webserver.content_send("<style>.parent{display:flex;flex-flow:row wrap;}.parent > *{flex: 1 100%;}tr:nth-child(even){background-color: #f2f2f230;}.box {margin: 5px;padding: 5px;border-radius: 0.8rem;background-color: rgba(221, 221, 221, 0.2);}@media all and (min-width: 600px){.side{flex:1 auto;}}@media all and (min-width:800px){.main{flex:3 0px;}.side-1{order:1;}.main{order:2;}.side-2{order:3;}.footer{order: 4;}}</style>")
+    webserver.content_send("<style>.parent{display:flex;flex-flow:row wrap;}.parent > *{flex: 1 100%;}tr:nth-child(even){background-color: #f2f2f230;}.box {margin: 5px;padding: 10px;border-radius: 0.8rem;background-color: rgba(221, 221, 221, 0.2);}@media all and (min-width: 600px){.side{flex:1 auto;}}@media all and (min-width:800px){.main{flex:3 0px;}.side-1{order:1;}.main{order:2;}.side-2{order:3;}.footer{order: 4;}}</style>")
   end
 
   #######################################################################
   # Upload javascript
   #######################################################################
-  
+#   substring(0,r.length-1));
   def upl_js()
     import webserver
-    var script_start =  "<script>"
+    var script       =  "<script>"
                         "var ownKey,sharedKey,token,bindKey,devID,lastLog;"
                         "function update(cmnd){if(!cmnd){cmnd='loop=1'}var xr=new XMLHttpRequest();xr.onreadystatechange=()=>{if(xr.readyState==4&&xr.status==200){"
                         "let r=xr.response;try{let j=JSON.parse(r);"
                         "if('KEY' in j){eb('key').innerHTML='Key: '+j.KEY}"
                         "else if('CMD' in j){console.log(j.CMD);window[j.CMD[0]](j.CMD[1]);}"
-                        "}catch{log(r.substring(0,r.length-1));}"
+                        "}catch{log(r.replace(/[^\\x20-\\x7E]/g,'\\n'));}"
                         "};};xr.open('GET','/mi32_key?'+cmnd,true);xr.send();};setInterval(update,250);"
-    var script_1     =  "function save(){update('save=1');}"
+                        "function save(){update('save=1');}"
                         "function genOwnKey(){if(ownKey==undefined){ownKey=sjcl.ecc.elGamal.generateKeys(256,10);}update('ownKey='+ownKey.pub.serialize().point);}"
                         "function mkShKey(k){console.log('Got public device key:',k);var _pk=new sjcl.ecc.elGamal.publicKey(sjcl.ecc.curves.c256, sjcl.ecc.curves['c256'].fromBits(sjcl.codec.hex.toBits(k)));"
                         "var _k = ownKey.sec.dhJavaEc(_pk);sharedKey='';for(var el of _k){sharedKey+=('0000000'+((el)>>>0).toString(16)).substr(-8);}console.log(sharedKey);deriveKey();}"
-                        "function log(msg){if(msg[0]=='<'){return;}let n=Number(msg.substring(0,12).replace(/[:,]/g, ''));if(n<=lastLog){return;}lastLog=n;let l=eb('log');l.value+=msg+'\\n';l.scrollTop=l.scrollHeight;}"
+                        "function log(msg){if(msg[0]=='<'){return;}let n=Number(msg.substring(0,12).replace(/[:,]/g, ''));if(n<=lastLog){return;}lastLog=n;let l=eb('log');l.value+=msg;l.scrollTop=l.scrollHeight;}"
                         "function pair(){update('pair='+eb('sens').value);eb('log').value+='Start pairing with: '+eb('sens').value+'\\n';}"
                         "function disc(){update('disc=1')}"
                         "function setDevID(i){devID=i;}"
@@ -459,16 +449,16 @@ class MI32_keyGen_UI
                         "function deriveKey(){"
                         "var derived_key = sjcl.codec.hex.fromBits(sjcl.misc.hkdf(sjcl.codec.hex.toBits(sharedKey), 8 * 64, null, 'mible-setup-info', sjcl.hash['sha256']));"
                         "token=derived_key.substring(0, 24);var bindkey= derived_key.substring(24, 56);console.log(token,bindkey);"
-                        "bindKey=derived_key.substring(24,56);eb('key').innerHTML=bindKey;"
+                        "bindKey=derived_key.substring(24,56).toUpperCase();eb('key').innerHTML='KEY: '+bindKey;"
                         "var _keyA=derived_key.substring(56,88);"
                         "mi_write_did = sjcl.codec.hex.fromBits(sjcl.mode.ccm.encrypt(new sjcl.cipher.aes(sjcl.codec.hex.toBits(_keyA)), sjcl.codec.hex.toBits(devID), sjcl.codec.hex.toBits('101112131415161718191A1B'), sjcl.codec.hex.toBits('6465764944'), 32));"
                         "update('didCT='+mi_write_did);}"
-    var script_2     =  "</script>"
+                        "</script>"
+
                         # var cr=xr.response.replace(/bytes\\(\\'([^']+)\\'\\)/g,'$1');
                         # for(i in s){if(s.substring(s.length-i,s.length)==t.substring(0,i)){console.log(s.substring(0,s.length-1),t.substring(i,t.length))}}
-     webserver.content_send(script_start)
-     webserver.content_send(script_1)
-     webserver.content_send(script_2)
+     
+    webserver.content_send(script)
   end
 
   def upl_js_file()
@@ -492,10 +482,13 @@ class MI32_keyGen_UI
             self.webCmd = ''
         else
             var line = self.log_reader.get_log(self.log_level)
-            if line == nil return rsp end  # no more logs
-            # rsp = string.format("{\"LOG\":\"%s\"}",line)
-            rsp = line
-            self.msg=''
+            if line != nil
+                rsp = line
+            end
+            while line != nil
+                line = self.log_reader.get_log(self.log_level)
+                if line != nil rsp+=line end
+            end
         end
     elif webserver.has_arg("pair")
         var mac = webserver.arg("pair")
@@ -503,7 +496,7 @@ class MI32_keyGen_UI
         self.pair(mac)
     elif webserver.has_arg("ownKey")
         self.ownKey = bytes(webserver.arg("ownKey"))
-        print("Key generated -> ESP:",self.ownKey)
+        print("Public key generated -> ESP:",self.ownKey)
     elif webserver.has_arg("didCT")
         self.did_ct = bytes(webserver.arg("didCT"))
         print("DID CT -> ESP:",self.did_ct)
@@ -511,7 +504,7 @@ class MI32_keyGen_UI
         self.bindKey = webserver.arg("bkey")
         print("Bind Key -> ESP:",self.bindKey)
     elif webserver.has_arg("save")
-        self.saveCfg()
+        mi.saveCfg()
         print("Saving mi32cfg.")
     elif webserver.has_arg("disc")
         ble.run(5)
@@ -552,11 +545,11 @@ class MI32_keyGen_UI
     self.show_devices()
     webserver.content_send("</div>")
     webserver.content_send(
-      "<div class='box side side-2'><p id='token'></p><p id='key'></p><br><button onclick='save()'>Save to mi32cfg</button></div>") #- close .box-# 
-    webserver.content_send("<div class='large box main'><h3>Log:</h3><textarea id='log' style='min-width:580px'>Waiting for driver ...\n</textarea>")
+      "<div class='box side side-2'><p id='token'></p><br><button onclick='save()'>Save to mi32cfg</button></div>") #- close .box-# 
+    webserver.content_send("<div class='large box main'><h3>Log:</h3><textarea id='log' style='min-width:580px' wrap='off'>Waiting for driver ...\n</textarea>")
     webserver.content_send("</div><br>")
 
-    webserver.content_send("<p></p></div><br>")        #- close .parent div-#
+    webserver.content_send("<p></p><br><p></p></div><br>")        #- close .parent div-#
 
     webserver.content_button(webserver.BUTTON_MANAGEMENT) #- button back to management page -#
     webserver.content_stop()                        #- end of web page -#
@@ -602,7 +595,6 @@ class MI32_keyGen_UI
     import webserver
     #- we need to register a closure, not just a function, that captures the current instance -#
     webserver.on("/mi32_key", / -> self.page_mi32_key(), webserver.HTTP_GET)
-    #webserver.on("/mi32_key", / -> self.page_mi32_key_ctl(), webserver.HTTP_POST)
   end
 end
 
@@ -619,7 +611,7 @@ if tasmota
     MI32_keyGen_UI.pair(payload)
     return true
   end
-  tasmota.add_cmd('pair', pair) # MAC of the dimmer
+  tasmota.add_cmd('pair', pair) # MAC of the sensor
 end
 
 return keyGen

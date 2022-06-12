@@ -64,8 +64,8 @@ end
 # Globals
 #################################################################################
 
-ble = BLE()
-mi = MI32_Extended()
+var ble = BLE()
+var mi = MI32_Extended()
 
 #################################################################################
 # MI32_keyGen_UI
@@ -370,13 +370,16 @@ class MI32_keyGen_UI
     end
 
     def recOK()
-        print("Receive okay")
         if(mi.state==mi.SEND_KEY)
             self.then(/->self.sendKey1())
         elif(mi.state==mi.SEND_DID)
+            if self.webCmd!=""
+                return
+            end
             self.call_JS_func("mkShKey",self.received_data.tohex()) # call JS function with args
             self.then(/->self.sendDID())
-        end     
+        end
+        print("Receive okay")
         self.sendData(mi.RCV_OK,mi.AVDTP)
     end
  
@@ -463,9 +466,14 @@ class MI32_keyGen_UI
 
   def upl_js_file()
     import webserver
-    # var f = open('core-min.js') # stripped down crypto library already enclosed in <script></script>
-    # webserver.content_send(f.read())
-    webserver.content_send("<script type='text/javascript' src='https://atc1441.github.io/core.js'></script>")
+
+    try
+        var f = open(kg_wd + 'sjcl_min.html',"r") # stripped down crypto library already enclosed in <script></script>
+        webserver.content_send(f.read())
+    except .. as e, m
+        print("sjcl_min.html not in FS, fallback to external JS library from https://Staars.github.io/sjcl_min.js'")
+        webserver.content_send("<script type='text/javascript' src='https://Staars.github.io/sjcl_min.js'></script>")
+    end
   end
 
   #######################################################################
@@ -603,12 +611,12 @@ keyGen.MI32_keyGen_UI = MI32_keyGen_UI
 
 #- create and register driver in Tasmota -#
 if tasmota
-  var MI32_keyGen_UI = keyGen.MI32_keyGen_UI()
-  tasmota.add_driver(MI32_keyGen_UI)
+  var mi32_keyGen_UI = keyGen.MI32_keyGen_UI()
+  tasmota.add_driver(mi32_keyGen_UI)
   ## can be removed if put in 'autoexec.bat'
-  MI32_keyGen_UI.web_add_handler()
+  mi32_keyGen_UI.web_add_handler()
   def pair(cmd, idx, payload, payload_json)
-    MI32_keyGen_UI.pair(payload)
+    mi32_keyGen_UI.pair(payload)
     return true
   end
   tasmota.add_cmd('pair', pair) # MAC of the sensor

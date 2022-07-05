@@ -72,32 +72,11 @@ def print_output(code,code_size,global_vars):
     print("#You can paste the following snippet into Tasmotas Berry console:")
     print("import ULP")
     print("ULP.wake_period(0,1000 * 1000)")
-    print("ULP.gpio_init(32,0)")
-    print("ULP.gpio_init(33,0)")
+    # print("ULP.gpio_init(32,0)") # only example for setup functions ...
+    # print("ULP.gpio_init(33,0)") # ... related to a specific project
     print("c = bytes(\""+code+"\")")
     print("# Length in bytes:",code_size)
-    
-    if code_size > 255:
-        function = """
-        # Code size too big for standard settting, you can try this hack.
-        # Do never open an issue about it, this is only a walkaround while  developing!
-        def ulp_save(b)
-          import ULP
-          var idx = b.get(4, 2)        # TEXT_OFFSET (bytes)
-          var last = idx + b.get(6, 2) + b.get(8,2)    # TEXT_SIZE (bytes) + DATA_SIZE (bytes)
-          var addr = 0
-          while idx < last
-              print("addr",addr,"idx",idx,"last",last)
-            ULP.set_mem(addr, b.get(idx, 4))
-            addr += 1
-            idx += 4
-          end
-        end
-        """
-        print(function)
-    else:
-        print("ULP.load(c)")
-    
+    print("ULP.load(c)")
     print("ULP.run()")
 
 def main(args):

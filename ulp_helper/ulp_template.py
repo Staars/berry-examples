@@ -38,9 +38,10 @@ file.write(code)
 
 print("")
 # For convenience you can add Berry commands to rapidly test out the resulting ULP code in the console
+# This could also be used in an init function of a Tasmota driver
 print("#You can paste the following snippet into Tasmotas Berry console:")
 print("import ULP")
 print("ULP.wake_period(0,500000)")
-print("c = bytes(\""+code+"\")")
+print("var c = bytes(\""+code+"\")")
 print("ULP.load(c)")
 print("ULP.run()")

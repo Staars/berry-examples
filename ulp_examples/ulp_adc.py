@@ -283,7 +283,7 @@ print("#You can paste the following snippet into Tasmotas Berry console:")
 print("import ULP")
 print("ULP.wake_period(0,20000)")
 print("ULP.adc_config(6,3,3)")
-print("c = bytes(\""+code+"\")")
+print("var c = bytes(\""+code+"\")")
 print("ULP.load(c)")
 print("ULP.run()")
 

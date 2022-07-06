@@ -230,6 +230,6 @@ print("import ULP")
 print("ULP.wake_period(0,3000000)")
 print("ULP.adc_config(0,2,3)") # adc1_config_channel_atten(ADC1_CHANNEL_0, ADC_ATTEN_DB_6);
 print("ULP.adc_config(3,2,3)") # adc1_config_channel_atten(ADC1_CHANNEL_3, ADC_ATTEN_DB_6); + adc1_config_width(ADC_WIDTH_BIT_12);
-print("c = bytes(\""+code+"\")")
+print("var c = bytes(\""+code+"\")")
 print("ULP.load(c)")
 print("ULP.run()")

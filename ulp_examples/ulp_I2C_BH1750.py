@@ -490,7 +490,7 @@ print("import ULP")
 print("ULP.wake_period(0,3 * 1000 * 1000)")
 print("ULP.gpio_init(32,0)")
 print("ULP.gpio_init(33,0)")
-print("c = bytes(\""+code+"\")")
+print("var c = bytes(\""+code+"\")")
 print("ULP.load(c)")
 print("ULP.run()")
 

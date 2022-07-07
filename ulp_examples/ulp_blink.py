@@ -2,14 +2,15 @@
 LED-Example with exporting ULP code to Tasmotas Berry implementation
 """
 from esp32_ulp import src_to_binary
+import ubinascii
 
 source = """\
 # constants from:
-# https://github.com/espressif/esp-idf/blob/1cb31e5/components/soc/esp32/include/soc/soc.h 
+# https://github.com/espressif/esp-idf/blob/1cb31e5/components/soc/esp32/include/soc/soc.h
 #define DR_REG_RTCIO_BASE            0x3ff48400
 
 # constants from:
-# https://github.com/espressif/esp-idf/blob/1cb31e5/components/soc/esp32/include/soc/rtc_io_reg.h 
+# https://github.com/espressif/esp-idf/blob/1cb31e5/components/soc/esp32/include/soc/rtc_io_reg.h
 #define RTC_IO_TOUCH_PAD2_REG        (DR_REG_RTCIO_BASE + 0x9c)
 #define RTC_IO_TOUCH_PAD2_MUX_SEL_M  (BIT(19))
 #define RTC_GPIO_OUT_REG             (DR_REG_RTCIO_BASE + 0x0)
@@ -20,7 +21,7 @@ source = """\
 #define RTC_GPIO_OUT_DATA_S          14
 
 # constants from:
-# https://github.com/espressif/esp-idf/blob/1cb31e5/components/soc/esp32/include/soc/rtc_io_channel.h 
+# https://github.com/espressif/esp-idf/blob/1cb31e5/components/soc/esp32/include/soc/rtc_io_channel.h
 #define RTCIO_GPIO2_CHANNEL          12
 
 # When accessed from the RTC module (ULP) GPIOs need to be addressed by their channel number
@@ -85,22 +86,16 @@ exit:
 binary = src_to_binary(source)
 
 # Export section for Berry
-code  = ""
-for l in binary:
-    l = hex(l)
-    if(len(l)<4):
-        l = "0x0" + l[-1]
-    code += l[2:]
-print(code)
+code_b64 = ubinascii.b2a_base64(binary).decode('utf-8')[:-1]
 
 file = open ("ulp_heartbeat.txt", "w")
-file.write(code)
+file.write(code_b64)
 
 print("")
 print("#You can paste the following snippet into Tasmotas Berry console:")
 print("import ULP")
 print("ULP.wake_period(0,500000) # on time")
 print("ULP.wake_period(1,200000) # off time ")
-print("var c = bytes(\""+code+"\")")
+print("var c = bytes().fromb64(\""+code_b64+"\")")
 print("ULP.load(c)")
 print("ULP.run()")

@@ -2,6 +2,7 @@
 Template for exporting ULP code to Tasmotas Berry implementation
 """
 from esp32_ulp import src_to_binary
+import ubinascii
 
 source = """
 # replace this multiline string with the content of an .S file
@@ -25,16 +26,10 @@ entry:
 binary = src_to_binary(source)
 
 # Export section for Berry
-code  = ""
-for l in binary:
-    l = hex(l)
-    if(len(l)<4):
-        l = "0x0" + l[-1]
-    code += l[2:]
-print(code)
+code_b64 = ubinascii.b2a_base64(binary).decode('utf-8')[:-1]
 
 file = open ("ulp_template.txt", "w")
-file.write(code)
+file.write(code_b64)
 
 print("")
 # For convenience you can add Berry commands to rapidly test out the resulting ULP code in the console
@@ -42,6 +37,6 @@ print("")
 print("#You can paste the following snippet into Tasmotas Berry console:")
 print("import ULP")
 print("ULP.wake_period(0,500000)")
-print("var c = bytes(\""+code+"\")")
+print("var c = bytes().fromb64(\""+code_b64+"\")")
 print("ULP.load(c)")
 print("ULP.run()")

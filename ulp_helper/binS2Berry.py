@@ -7,7 +7,7 @@ from os import listdir
 from os import path
 from os.path import join
 import sys
-import re
+from base64 import b64encode
 
 def get_files():
     if not path.exists('build'):
@@ -58,9 +58,11 @@ def parse_asm_file(asm_file):
     if code_size%4 != 0:
         print("Parsing error!")
         print("No long word alignement.")
-    return code, code_size
     
-def print_output(code,code_size,global_vars):
+    code_b64 = b64encode(bytes.fromhex(code)).decode()
+    return code, code_b64, code_size
+    
+def print_output(code,code_b64,code_size,global_vars):
     print("### Global vars (including function labels):")
     for var in global_vars:
         rtc_addr = int((int(var.split(" ")[-1],0)-0x50000000)/4)
@@ -74,7 +76,7 @@ def print_output(code,code_size,global_vars):
     print("ULP.wake_period(0,1000 * 1000)")
     # print("ULP.gpio_init(32,0)") # only example for setup functions ...
     # print("ULP.gpio_init(33,0)") # ... related to a specific project
-    print("c = bytes(\""+code+"\")")
+    print("c = bytes().fromb64(\""+code_b64+"\")")
     print("# Length in bytes:",code_size)
     print("ULP.load(c)")
     print("ULP.run()")
@@ -83,11 +85,10 @@ def main(args):
     print("Parsing /build folder ...")
     asm_file, map_file = get_files()
     print(asm_file, map_file)
-    code, code_size = parse_asm_file(asm_file)
+    code, code_b64, code_size = parse_asm_file(asm_file)
     global_vars = parse_map_file(map_file)
-    print_output(code, code_size, global_vars)
+    print_output(code, code_b64, code_size, global_vars)
 
 
 if __name__ == '__main__':
   sys.exit(main(sys.argv))
-# end if

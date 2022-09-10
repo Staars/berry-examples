@@ -34,8 +34,6 @@ MI_KEY1 = bytes('90CA85DE')
 MI_KEY2 = bytes('92AB54FA')
 PID = 950
 
-ble = BLE()
-mi = MI32()
 buf = bytes(-64)
 
 #################################################################################
@@ -108,11 +106,11 @@ class BLE_keyGenLeg_UI
         return perm
     end
 
-    def cipherCrypt(input, perm)
+    def cipherCrypt(inp, perm)
         var index1 = 0
         var index2 = 0
-        var _size = size(input)
-        # print("Size:",_size, input)
+        var _size = size(inp)
+        # print("Size:",_size, inp)
         var output = bytes(-_size)
         var _range = _size-1 
         for i:0.._range
@@ -131,9 +129,9 @@ class BLE_keyGenLeg_UI
         return output
     end
 
-    def cipher(key, input)
+    def cipher(key, inp)
         var perm = self.cipherInit(key)
-        return self.cipherCrypt(input, perm)
+        return self.cipherCrypt(inp, perm)
     end
     
     def generateRandomToken()
@@ -145,8 +143,9 @@ class BLE_keyGenLeg_UI
     end
 
     def init()
+        import BLE
         var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
-        ble.conn_cb(cbp,buf)
+        BLE.conn_cb(cbp,buf)
         self.current_func = self.wait
         self.msg = ""
         self.key = ""
@@ -179,23 +178,25 @@ class BLE_keyGenLeg_UI
     
     def pair(MAC)
         import string
+        import BLE
         self.MAC = MAC
         self.token = self.generateRandomToken()
         self.log(string.format("Generated random token: %s",str(self.token)))
         self.rev_MAC = self.reverseMac(bytes(MAC))
         self.log(string.format("Try to connect to: %s",MAC))
         self.log("Long press pair button, LED should blink shortly!")
-        ble.set_MAC(bytes(MAC),0)
-        ble.set_svc(UUID_SERVICE)
-        ble.set_chr(UUID_AUTH_INIT)
+        BLE.set_MAC(bytes(MAC),0)
+        BLE.set_svc(UUID_SERVICE)
+        BLE.set_chr(UUID_AUTH_INIT)
         buf[0] = 4
         self.copyBufToPos(buf,1,MI_KEY1)
-        ble.run(2,1)
+        BLE.run(2,1)
         self.then(/->self.func1())
     end
 
     def cb(error,op,uuid)
         import string
+        import BLE
         print("BLE Op:",op,"UUID:",uuid)
         if error == 0
             if op == 103
@@ -212,54 +213,60 @@ class BLE_keyGenLeg_UI
             self.log("BLE error, did disconnect!")
         elif error > 2
             self.log("BLE error, will disconnect!")
-            ble.run(5) # disconnect
+            BLE.run(5) # disconnect
         end
     end
 
     def func1()
+        import BLE
         self.log("Did connect, subscribe to UUID_AUTH")
-        ble.set_chr(UUID_AUTH)
-        ble.run(3,1)
+        BLE.set_chr(UUID_AUTH)
+        BLE.run(3,1)
         self.then(/->self.func2())
     end
     def func2()
+        import BLE
         self.log("Write to UUID_AUTH")
-        ble.set_chr(UUID_AUTH)
+        BLE.set_chr(UUID_AUTH)
         var _mixA = self.mixA(self.rev_MAC,PID)
         var _buf = self.cipher(_mixA,self.token)
         self.copyBufToPos(buf,1,_buf)
         buf[0] = size(_buf)
         print("size:", buf[0])
-        ble.run(2,1)
+        BLE.run(2,1)
         self.then(/->self.wait)
     end
     # virtual func3 is just waiting for the notification in the cb
     def func4()
+        import BLE
         import string
-        ble.set_chr(UUID_AUTH)
+        BLE.set_chr(UUID_AUTH)
         var _buf = self.cipher(self.token, MI_KEY2)
         print(_buf)
         self.copyBufToPos(buf,1,_buf)
         buf[0] = size(_buf)
         print("size:", buf[0])
-        ble.run(2,1)
+        BLE.run(2,1)
         self.then(/->self.func5())
     end
     def func5()
+        import BLE
         self.log("Will read FW version")
-        ble.set_chr(UUID_FIRMWARE_VERSION)
-        ble.run(1)
+        BLE.set_chr(UUID_FIRMWARE_VERSION)
+        BLE.run(1)
         self.then(/->self.func6())
     end
     def func6()
+        import BLE
         self.log("Got FW version, will read key")
         var fw_version = self.cipher(self.token, buf[1..buf[0]])
         self.log(str(fw_version))
-        ble.set_chr(UUID_BEACON_KEY)
-        ble.run(1)
+        BLE.set_chr(UUID_BEACON_KEY)
+        BLE.run(1)
         self.then(/->self.func7())
     end
     def func7()
+        import BLE
         import string
         print("Got key with length:", buf[0])
         var key = self.cipher(self.token, buf[1..buf[0]])
@@ -267,7 +274,7 @@ class BLE_keyGenLeg_UI
         self.log(string.format("Bind Key: %s", self.key))
         self.log("Success!! Will disconnect sensor.")
         self.shallSendKey = true;
-        ble.run(5)
+        BLE.run(5)
         self.then(/->self.func8())
     end
     def func8()
@@ -296,11 +303,12 @@ class BLE_keyGenLeg_UI
   def show_devices()
     import webserver
     import string
+    import MI32
     webserver.content_send("<p>Compatible devices:<p><select name='sensors' id='sens'>")
-    var num = mi.devices()-1
+    var num = MI32.devices()-1
     for i:0..num
-        if mi.get_name(i) == "YLKG08"
-            var mac = mi.get_MAC(i)
+        if MI32.get_name(i) == "YLKG08"
+            var mac = MI32.get_MAC(i)
             var mac_str = string.split(str(mac),"'")[1]
             webserver.content_send(string.format("<option value=%s>YLKG08 - MAC: %s</option>",mac_str,mac_str))
             self.log(string.format("Found YLKG08 with MAC: %s",mac_str))

@@ -16,7 +16,7 @@ var keyGen = module('keyGen')
 #################################################################################
 # mi helper class
 #################################################################################
-class MI32_Extended : MI32
+class MI32_Helper
     static svc = "fe95"
     static UPNP = '0010' # protocol identifier names
     static AVDTP = '0019'
@@ -64,8 +64,7 @@ end
 # Globals
 #################################################################################
 
-var ble = BLE()
-var mi = MI32_Extended()
+var mi = MI32_Helper()
 
 #################################################################################
 # MI32_keyGen_UI
@@ -83,9 +82,10 @@ class MI32_keyGen_UI
     var chunks, chunkIdx, lastChunk
 
     def init()
+        import BLE
         var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
         self.buf = bytes(-64)
-        ble.conn_cb(cbp,self.buf)
+        BLE.conn_cb(cbp,self.buf)
         self.current_func = self.wait
         self.ownKey = ""
         self.log_reader = tasmota_log_reader()
@@ -102,6 +102,7 @@ class MI32_keyGen_UI
 
     def cb(error,op,uuid)
         import string
+        import BLE
         # print("BLE Op:",op,"UUID:",uuid)
         if error == 0
             if op == 103
@@ -118,7 +119,7 @@ class MI32_keyGen_UI
             print("BLE error, did disconnect!")
         elif error > 2
             print("BLE error, will disconnect!")
-            ble.run(5) # disconnect
+            BLE.run(5) # disconnect
         end
     end
 
@@ -130,18 +131,20 @@ class MI32_keyGen_UI
     end
 
     def sendData(data,chr)
-        ble.set_svc(mi.svc)
-        ble.set_chr(chr)
+        import BLE
+        BLE.set_svc(mi.svc)
+        BLE.set_chr(chr)
         self.buf[0] = size(data)
         self.copyBufToPos(self.buf,1,data)
-        return ble.run(2,0)
+        return BLE.run(2,false)
     end
 
     def subscribe(chr)
-        ble.set_svc(mi.svc)
-        ble.set_chr(chr)
+        import BLE
+        BLE.set_svc(mi.svc)
+        BLE.set_chr(chr)
         print("Subscribe to: ",chr)
-        return ble.run(3,1)
+        return BLE.run(3,true)
     end
 
     # call Javascript function with args
@@ -292,11 +295,12 @@ class MI32_keyGen_UI
     end
 
     # entry point, started from the web UI
-    def pair(MAC) 
+    def pair(MAC)
+        import BLE
         import string
         self.MAC = MAC
         print("Try to connect to: ",MAC)
-        ble.set_MAC(bytes(MAC),0)
+        BLE.set_MAC(bytes(MAC),0)
         mi.state = mi.INIT
         self.call_JS_func("genOwnKey")
         self.then(/->self.func1())
@@ -347,8 +351,9 @@ class MI32_keyGen_UI
         self.then(/->self.wait())
     end
     def comm()
+        import BLE
         print("Pairing finished!!")
-        ble.run(5)
+        BLE.run(5)
         self.then(/->self.setKey())
     end
     def setKey()
@@ -398,12 +403,13 @@ class MI32_keyGen_UI
   def show_devices()
     import webserver
     import string
+    import MI32
     webserver.content_send("<p>Compatible devices:<p><select name='sensors' id='sens'>")
-    var num = mi.devices()-1
+    var num = MI32.devices()-1
     for i:0..num
-        var name = mi.get_name(i)
+        var name = MI32.get_name(i)
         if  mi.supported(name)
-            var mac = mi.get_MAC(i)
+            var mac = MI32.get_MAC(i)
             var mac_str = mac.tohex()
             webserver.content_send(string.format("<option value=%s>%s - MAC: %s</option>",mac_str,name,mac_str))
         end
@@ -468,7 +474,8 @@ class MI32_keyGen_UI
     import webserver
 
     try
-        var f = open(kg_wd + 'sjcl_min.html',"r") # stripped down crypto library already enclosed in <script></script>
+        var f = open('sjcl_min.html',"r") # stripped down crypto library already enclosed in <script></script>
+        # var f = open(kg_wd + 'sjcl_min.html',"r") # stripped down crypto library already enclosed in <script></script>
         webserver.content_send(f.read())
     except .. as e, m
         print("sjcl_min.html not in FS, fallback to external JS library from https://Staars.github.io/sjcl_min.js'")
@@ -483,6 +490,7 @@ class MI32_keyGen_UI
   def handleAJAX()
     import string
     import webserver
+    import BLE
     var rsp = "{\"OK\":[]}"
     if webserver.has_arg("loop")
         if self.webCmd!=''
@@ -515,7 +523,7 @@ class MI32_keyGen_UI
         mi.saveCfg()
         print("Saving mi32cfg.")
     elif webserver.has_arg("disc")
-        ble.run(5)
+        BLE.run(5)
         print("Will disconnect.")
     else
         return nil

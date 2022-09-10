@@ -15,21 +15,21 @@ var blescan = module('blescan')
 #################################################################################
 class BLE_scan_UI
  
-    var ble, cbp, buf
+    var buf
     var scan_timer, scan_result, active_scan
     var update_table, stop_scan
 
 
     def init()
+        import BLE
         self.buf = bytes(-96)
         self.scan_timer = 0
         self.scan_result = []
         self.stop_scan = false
         self.active_scan = tasmota.cmd("mi32option4")
 
-        self.cbp = tasmota.gen_cb(/svc,man -> self.cb(svc,man))
-        self.ble = BLE()
-        self.ble.adv_cb(self.cbp,self.buf)
+        var cbp = tasmota.gen_cb(/svc,man -> self.cb(svc,man))
+        BLE.adv_cb(cbp,self.buf)
     end
 
     def cb(svc,man)
@@ -64,17 +64,17 @@ class BLE_scan_UI
         var i = 9                       #- start of payload -#
         while i < 9+len_p
             var len = self.buf.get(i,1)
-            var type = self.buf.get(i+1,1)
-            if type==2 || type==3
+            var _type = self.buf.get(i+1,1)
+            if _type==2 || _type==3
               entry['SVC_UUID']=self.buf.get(i+2,2)
             end
-            if type==0x16
+            if _type==0x16
               entry['SVC_DATA']=self.buf.get(i+2,2)
             end
-            if type==0xff
+            if _type==0xff
               entry['CID']=self.buf.get(i+2,2)
             end
-            if type==8 || type==9
+            if _type==8 || _type==9
               var _name = self.buf[i+2..(i+len)] + bytes('00') # null terminate it
               entry['Name']=_name.asstring()
             end
@@ -150,10 +150,6 @@ class BLE_scan_UI
      webserver.content_send(script_start)
      webserver.content_send(script_1)
      webserver.content_send(script_2)
-     f = open("crypto.js")
-     webserver.content_send("<script>")
-     webserver.content_send(f.read())
-     webserver.content_send("</script>")
   end
 
   #######################################################################
@@ -200,7 +196,7 @@ class BLE_scan_UI
 
     self.upl_js()                             #- send own JS -#
 
-    webserver.content_send("<div class='parent'><header class='box'><h2> BLE Scanner / MI32</h2><p style='text-align:right;'>... powered by BERRY</p></header>")
+    webserver.content_send("<div class='parent'><header class='box'><h2> BLE Scanner / MI32</h2><p style='text-align:right;'>... powered by BERRY</p></header>")
     webserver.content_send("<div class='box side side-1'><p id='hbeat'>Scanning ...</p>")
     webserver.content_send("<input type='checkbox' onclick='actSc(this)'>Active scanning</input><p id='log'></p><br><input type='checkbox' onclick='ignCC(this)'>Ignore CID (in HEX): <input type='text' onchange='ignCV(this)' style='width:auto;' size='12'><br>")
     webserver.content_send("<input type='checkbox' onclick='ignRC(this)'>Ignore RSSI (weaker than): <input type='number' onchange='ignRV(this)' style='width:auto;'  min='-99' max='0'><br>")

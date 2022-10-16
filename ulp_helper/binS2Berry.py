@@ -80,7 +80,7 @@ def print_output(code,code_b64,code_size,global_vars,ulp_type):
     print("ULP.wake_period(0,1000 * 1000)")
     # print("ULP.gpio_init(32,0)") # only example for setup functions ...
     # print("ULP.gpio_init(33,0)") # ... related to a specific project
-    print("c = bytes().fromb64(\""+code_b64+"\")")
+    print("var c = bytes().fromb64(\""+code_b64+"\")")
     print("# Length in bytes:",code_size)
     print("ULP.load(c)")
     print("ULP.run()")

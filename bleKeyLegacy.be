@@ -190,7 +190,7 @@ class BLE_keyGenLeg_UI
         BLE.set_chr(UUID_AUTH_INIT)
         buf[0] = 4
         self.copyBufToPos(buf,1,MI_KEY1)
-        BLE.run(2,1)
+        BLE.run(2,true)
         self.then(/->self.func1())
     end
 
@@ -221,7 +221,7 @@ class BLE_keyGenLeg_UI
         import BLE
         self.log("Did connect, subscribe to UUID_AUTH")
         BLE.set_chr(UUID_AUTH)
-        BLE.run(3,1)
+        BLE.run(3,true)
         self.then(/->self.func2())
     end
     def func2()
@@ -233,7 +233,7 @@ class BLE_keyGenLeg_UI
         self.copyBufToPos(buf,1,_buf)
         buf[0] = size(_buf)
         print("size:", buf[0])
-        BLE.run(2,1)
+        BLE.run(2,true)
         self.then(/->self.wait)
     end
     # virtual func3 is just waiting for the notification in the cb
@@ -246,7 +246,7 @@ class BLE_keyGenLeg_UI
         self.copyBufToPos(buf,1,_buf)
         buf[0] = size(_buf)
         print("size:", buf[0])
-        BLE.run(2,1)
+        BLE.run(2,true)
         self.then(/->self.func5())
     end
     def func5()

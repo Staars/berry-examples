@@ -1,0 +1,82 @@
+# Tasmota BLE server example (iBeacon advertiser)
+import BLE
+var cbuf = bytes(-255)
+
+class IBEACON : Driver
+    var current_func, next_func
+    var uuid, major, minor, power
+
+    def init()
+        var cbp = tasmota.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
+        BLE.serv_cb(cbp,cbuf)
+        self.current_func = /->self.update_ADV()
+        print("BLE: iBeacon demo")
+        self.uuid = bytes("FB0B57A2822844CD913A94A122BA1206")
+        self.major = bytes("0001")
+        self.minor = bytes("0002")
+        self.power = bytes("d1")
+    end
+
+    def every_50ms()
+        self.current_func()
+    end
+
+    def wait()
+    end
+
+    def then(func)
+        # save function pointers for callback, typically expecting a closure
+        self.next_func = func
+        self.current_func = /->self.wait()
+    end
+
+    def cb(error,op,uuid,handle)
+        print(error,op,uuid,handle)
+        if error == 0
+            self.current_func = self.next_func
+        end
+    end
+
+    def beacon()
+        # intentionally inefficient
+        var flags = bytes("020106")
+        var prefix =  bytes("1AFF4C000215") # manufacturer data + iBeacon prefix
+        var beacon = flags + prefix + self.uuid + self.major + self.minor + self.power
+        return beacon
+    end
+
+    def update_ADV()
+        var payload = self.beacon()
+        print("ADV payload:",payload)
+        cbuf[0] = size(payload)
+        cbuf.setbytes(1,payload)
+        BLE.run(201)
+        self.then(/->self.wait())
+    end
+
+      #- display sensor value in the web UI -#
+  def web_sensor()
+    import string
+    var msg = string.format(
+             "{s}<hr>{m}<hr>{e}"
+             "{s}iBeacon{m}is advertising{e}"..
+             "{s}UUID{m}%s{e}"..
+             "{s}Major{m}%s{e}"..
+             "{s}Minor{m}%s{e}"..
+             "{s}Power{m}%i dB{e}",
+              self.uuid.tohex(),self.major.tohex(),self.minor.tohex(),self.power.geti(0,1))
+    tasmota.web_send_decimal(msg)
+  end
+
+  #- add sensor value to teleperiod -#
+  def json_append()
+    import string
+    var msg = string.format(",\"iBeacon\":{\"UUID\":%s,\"Major\":%s,\"Minor\":%s,\"Power\":%i}",
+    self.uuid.tohex(),self.major.tohex(),self.minor.tohex(),self.power.geti(0,1))
+    tasmota.response_append(msg)
+  end
+
+end
+
+var ibeacon = IBEACON()
+tasmota.add_driver(ibeacon)

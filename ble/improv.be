@@ -79,7 +79,7 @@ class IMPROV : Driver
     def provisioned()
         BLE.set_svc("00467768-6228-2272-4663-277478268000")
         BLE.set_chr("00467768-6228-2272-4663-277478268001")
-        # tasmota.cmd("Backlog SSID1 "+self.ssid+"; Password1 "+self.pwd)
+        tasmota.cmd("Backlog SSId1 "+self.ssid+"; Password1 "+self.pwd)
         print("Backlog SSID1 "+self.ssid+"; Password1 "+self.pwd)
         cbuf.setbytes(0,bytes("0104"))
         BLE.run(211)

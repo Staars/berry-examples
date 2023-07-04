@@ -44,19 +44,23 @@ class IMPROV : Driver
         # no error handling yet
         var data = cbuf[1..(cbuf[0]-1)]
         var chksum = self.chksum(data)
+        if chksum != cbuf[cbuf[0]]
+            print("Wrong checksum!!",chksum,cbuf[cbuf[0]-1])
+        end
         var cmd = cbuf[1]
+        var len = cbuf[2]
         var ssid_len = cbuf[3]
-        self.ssid = (cbuf[4..4+ssid_len]+bytes("00")).asstring()
+        self.ssid = (cbuf[4..4+ssid_len-1]).asstring()
         var pwd_len = cbuf[4+ssid_len]
-        self.pwd = (cbuf[5+ssid_len..4+ssid_len+pwd_len]+bytes("00")).asstring()
+        self.pwd = (cbuf[5+ssid_len..5+ssid_len+pwd_len-1]).asstring()
 
-        # print("BLE: improv-wifi ssid:",ssid,"password",pwd)
-        self.then(/->self.provisioning())
+        # print("BLE: improv-wifi ssid:",ssid_len,size(self.ssid),"password",pwd_len,size(self.pwd))
+        self.then(/->self.provisioning(1))
     end
 
     def identify()
         #Now we would need some kind of user interaction with the device
-        #if (gpio.digital_read(0) == 1) return end
+        # if (gpio.digital_read(9) == 1) return end # example for Node-MCU C3-32S user-defined button
         print("User authorization done!") # But we do not care for this demo
         self.imp_state = 2;
         BLE.set_svc("00467768-6228-2272-4663-277478268000")
@@ -66,25 +70,39 @@ class IMPROV : Driver
         self.then(/->self.wait())
     end
 
-    def provisioning()
-        print("Checking commisioning data") # we don't as it is not really possible without rebooting
+    def provisioning(step)
+        tasmota.cmd("Wifitest2 "+self.ssid+"+"+self.pwd)
         BLE.set_svc("00467768-6228-2272-4663-277478268000")
         BLE.set_chr("00467768-6228-2272-4663-277478268001")
         cbuf.setbytes(0,bytes("0103"))
         BLE.run(211)
         self.imp_state = 3;
-        self.then(/->self.provisioned())
+        self.then(/->self.provisioned(1))
     end
 
-    def provisioned()
-        BLE.set_svc("00467768-6228-2272-4663-277478268000")
-        BLE.set_chr("00467768-6228-2272-4663-277478268001")
-        tasmota.cmd("Backlog SSId1 "+self.ssid+"; Password1 "+self.pwd)
-        print("Backlog SSID1 "+self.ssid+"; Password1 "+self.pwd)
-        cbuf.setbytes(0,bytes("0104"))
-        BLE.run(211)
-        self.imp_state = 4;
-        self.then(/->self.wait())
+    def provisioned(step)
+        if step < 255
+            var w = tasmota.wifi()
+            var ip = nil
+            try
+                ip = w['ip']
+                print(ip)
+            except ..
+                self.current_func = /->self.provisioned(step + 1)
+                return
+            end
+            if ip != '0.0.0.0'
+                print("IP address",ip)
+                BLE.set_svc("00467768-6228-2272-4663-277478268000")
+                BLE.set_chr("00467768-6228-2272-4663-277478268001")
+                tasmota.cmd("Backlog SSId1 "+self.ssid+"; Password1 "+self.pwd)
+                # print("Backlog SSID1 "+self.ssid+"; Password1 "+self.pwd)
+                cbuf.setbytes(0,bytes("0104"))
+                BLE.run(211)
+                self.imp_state = 4;
+                self.then(/->self.wait())
+            end
+        end
     end
 
     def execCmd(c)

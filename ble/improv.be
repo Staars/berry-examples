@@ -1,11 +1,23 @@
-# Tasmota BLE server example (Improv-Wifi and PIN secured command input)
+#------------------------------------------------------------------------------
+- Improv-Wifi and PIN secured command input - needs custom build with 
+-
+- starts a BLE server that allows to send Wi-Fi credentials to the ESP32
+- implements the Improv standard - see https://www.improv-wifi.com
+- should be adapted for personal needs - it is impossible to have "one fits all"
+- is typically loaded from an `autoexec.be` in Tasmota file system
+
+- the command input with PIN secure is a non standardized example, that
+- can be used with generic smartphone apps to write to characteristic FFF2
+- and listen to FFF1
+-------------------------------------------------------------------------------#
+
 import BLE
 var cbuf = bytes(-255)
 
 class IMPROV : Driver
     var current_func, next_func
     var pin_ready
-    var ssid, pwd, imp_state
+    var ssid, pwd, imp_state, msg_buffer
     static PIN = "123456" # 🤫
 
     def init()
@@ -15,6 +27,7 @@ class IMPROV : Driver
         self.current_func = /->self.add_8001()
         print("BLE: wifi-improv ready for connection")
         self.pin_ready = false
+        self.msg_buffer = []
         self.imp_state = 0x01 # Awaiting authorization via physical interaction.
     end
 
@@ -41,26 +54,42 @@ class IMPROV : Driver
     end
 
     def parseRPC()
-        # no error handling yet
-        var data = cbuf[1..(cbuf[0]-1)]
-        var chksum = self.chksum(data)
-        if chksum != cbuf[cbuf[0]]
-            print("Wrong checksum!!",chksum,cbuf[cbuf[0]-1])
+        # parses the response from the sender of the credentials
+        # no real error handling yet
+        var data = cbuf[1..(cbuf[0])]
+        if size(self.msg_buffer) > 0
+        self.msg_buffer += data
+        else
+            self.msg_buffer = data
         end
-        var cmd = cbuf[1]
-        var len = cbuf[2]
-        var ssid_len = cbuf[3]
-        self.ssid = (cbuf[4..4+ssid_len-1]).asstring()
-        var pwd_len = cbuf[4+ssid_len]
-        self.pwd = (cbuf[5+ssid_len..5+ssid_len+pwd_len-1]).asstring()
+        if self.msg_buffer[1]+3 != size(self.msg_buffer) # +3 <- cmnd + length of message + checksum
+            print("need more data in RPC",self.msg_buffer[1]+3,size(self.msg_buffer))
+            return
+        end
+        print("msg_buffer complete with size", size(self.msg_buffer))
+        var cmd = self.msg_buffer[0]
+        var len = self.msg_buffer[1]
 
-        # print("BLE: improv-wifi ssid:",ssid_len,size(self.ssid),"password",pwd_len,size(self.pwd))
-        self.then(/->self.provisioning(1))
+        var chksum = self.chksum(self.msg_buffer[0..len+1])
+        if chksum != self.msg_buffer[len+2]
+            print("Wrong checksum!!",chksum,self.msg_buffer[len+2]) # still not sure what range to compute
+        end
+        var ssid_len = self.msg_buffer[2]
+        self.ssid = (self.msg_buffer[3..3+ssid_len-1]).asstring()
+        var pwd_len = self.msg_buffer[3+ssid_len]
+        self.pwd = (self.msg_buffer[4+ssid_len..4+ssid_len+pwd_len-1]).asstring()
+        self.then(/->self.provisioning())
     end
 
     def identify()
-        #Now we would need some kind of user interaction with the device
-        # if (gpio.digital_read(9) == 1) return end # example for Node-MCU C3-32S user-defined button
+        #----------------------------------------------------------------------------------
+        - This is the only place, where you can secure the ESP32 device from the outside
+        - by forcing a pysical user interaction with the device, i.e. a button press.
+        - It is totally impossible to provide a generic way for every possible ESP32 device.
+        - Thus the next code line (for Node-MCU C3-32S user-defined button) is 
+        - commented out and continues to the next step, pretending all is fine.
+        ------------------------------------------------------------------------------------#
+        # if (gpio.digital_read(9) == 1) return end
         print("User authorization done!") # But we do not care for this demo
         self.imp_state = 2;
         BLE.set_svc("00467768-6228-2272-4663-277478268000")
@@ -71,6 +100,7 @@ class IMPROV : Driver
     end
 
     def provisioning(step)
+        # attempt connection with given credentials
         tasmota.cmd("Wifitest2 "+self.ssid+"+"+self.pwd)
         BLE.set_svc("00467768-6228-2272-4663-277478268000")
         BLE.set_chr("00467768-6228-2272-4663-277478268001")
@@ -81,7 +111,8 @@ class IMPROV : Driver
     end
 
     def provisioned(step)
-        if step < 255
+         # test if credentials are working
+        if step < 255 # some kind of timeout (255 * 50 millis), could be adapted
             var w = tasmota.wifi()
             var ip = nil
             try
@@ -95,7 +126,7 @@ class IMPROV : Driver
                 print("IP address",ip)
                 BLE.set_svc("00467768-6228-2272-4663-277478268000")
                 BLE.set_chr("00467768-6228-2272-4663-277478268001")
-                tasmota.cmd("Backlog SSId1 "+self.ssid+"; Password1 "+self.pwd)
+                tasmota.cmd("Backlog SSId1 "+self.ssid+"; Password1 "+self.pwd) # set and reboot
                 # print("Backlog SSID1 "+self.ssid+"; Password1 "+self.pwd)
                 cbuf.setbytes(0,bytes("0104"))
                 BLE.run(211)
@@ -219,7 +250,9 @@ class IMPROV : Driver
         cbuf.setbytes(1,b)
         cbuf[0] = size(b)
         BLE.run(211)
-        self.then(/->self.add_ScanResp())
+        self.then(/->self.add_ADV())
+        # if you want to add a local name in the advertisement use the following line instead
+        # self.then(/->self.add_ScanResp())
     end
     # services and characteristics are set, now start the server with first set of advertisement data
     def add_ADV()
@@ -229,8 +262,9 @@ class IMPROV : Driver
         BLE.run(201)
         self.then(/->self.wait())
     end
+    # unused example function, could be called from add_fff2()
     def add_ScanResp()
-        var local_name = "Tasmota BLE" # just for demonstration, makes not so much sense
+        var local_name = "Tasmota BLE" # just for demonstration, makes not so much sense in this context
         var payload = bytes("0201060008") + bytes().fromstring(local_name) # 00 before 08  is a placeholder
         payload[3] = size(local_name) + 1 # ..set size of name
         cbuf[0] = size(payload)

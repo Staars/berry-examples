@@ -18,6 +18,7 @@ class IMPROV : Driver
     var current_func, next_func
     var pin_ready
     var ssid, pwd, imp_state, msg_buffer
+    var devInfo, AP_list
     static PIN = "123456" # 🤫
 
     def init()
@@ -29,6 +30,7 @@ class IMPROV : Driver
         self.pin_ready = false
         self.msg_buffer = []
         self.imp_state = 0x01 # Awaiting authorization via physical interaction.
+        self.devInfo = self.getDevInfoString()
     end
 
     def every_50ms()
@@ -51,6 +53,42 @@ class IMPROV : Driver
             checksum = checksum & 255
         end
         return checksum
+    end
+
+    def getDevInfoString()
+        import string
+        var r =  tasmota.cmd("status 2")
+        var v = r["StatusFWR"]["Version"]
+        v = string.split(v,"(")
+        var f = v[1][0..-2]
+        v = v[0]
+        r = tasmota.cmd("status 5")
+        var n = r["StatusNET"]["Hostname"]
+        var a = tasmota.arch()
+        return f"Tasmota {f}, {v}, {a}, {n}}"
+    end
+
+    def startWifiScan()
+        self.AP_list = []
+        tasmota.cmd("WiFiScan 1")
+    end
+
+    def readWifiScan()
+        var r = tasmota.cmd("WiFiScan")
+        var s = r["WiFiScan"]
+        if  s == "Not Started"
+            return false
+        end 
+        if s == "Scanning"
+            return false
+        end
+        for i:range(1,size(s))
+            var e = s[f"NET{i}"]
+            var enc = "YES"
+            if e["Encryption"] == "OPEN" enc = "NO" end
+            var l = e["SSId"] + ", " +  e["Signal"]  + ", " + enc
+            self.AP_list.push(l)
+        end
     end
 
     def parseRPC()

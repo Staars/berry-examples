@@ -17,7 +17,7 @@ var cbuf = bytes(-255)
 class IMPROV : Driver
     var current_func, next_func
     var pin_ready
-    var ssid, pwd, imp_state, msg_buffer
+    var ssid, pwd, imp_state, msg_buffer, current_cmd
     var devInfo, AP_list
     static PIN = "123456" # 🤫
 
@@ -31,6 +31,7 @@ class IMPROV : Driver
         self.msg_buffer = []
         self.imp_state = 0x01 # Awaiting authorization via physical interaction.
         self.devInfo = self.getDevInfoString()
+        self.current_cmd = 0
     end
 
     def every_50ms()
@@ -91,32 +92,74 @@ class IMPROV : Driver
         end
     end
 
+    def useCredentials()
+        var ssid_len = self.msg_buffer[2]
+        self.ssid = (self.msg_buffer[3..3+ssid_len-1]).asstring()
+        var pwd_len = self.msg_buffer[3+ssid_len]
+        self.pwd = (self.msg_buffer[4+ssid_len..4+ssid_len+pwd_len-1]).asstring()
+        self.then(/->self.provisioning())
+    end
+
+    def deviceReaction()
+        print("Hello")
+        # Blink an LED or something else, but this is very hardware dependant
+    end
+
+    def sendDevInfo()
+        print(self.devInfo)
+    end
+
+    def sendWifiScan()
+        print(self.AP_list)
+    end
+
+    def resetMsgBuffer()
+        self.current_cmd = 0
+        self.msg_buffer = []
+    end
+
     def parseRPC()
         # parses the response from the sender of the credentials
         # no real error handling yet
         var data = cbuf[1..(cbuf[0])]
         if size(self.msg_buffer) > 0
-        self.msg_buffer += data
+            self.msg_buffer += data
         else
             self.msg_buffer = data
+            self.current_cmd = self.msg_buffer[0]
         end
         if self.msg_buffer[1]+3 != size(self.msg_buffer) # +3 <- cmnd + length of message + checksum
             print("need more data in RPC",self.msg_buffer[1]+3,size(self.msg_buffer))
             return
         end
         print("msg_buffer complete with size", size(self.msg_buffer))
-        var cmd = self.msg_buffer[0]
+        
         var len = self.msg_buffer[1]
-
         var chksum = self.chksum(self.msg_buffer[0..len+1])
         if chksum != self.msg_buffer[len+2]
             print("Wrong checksum!!",chksum,self.msg_buffer[len+2]) # still not sure what range to compute
         end
-        var ssid_len = self.msg_buffer[2]
-        self.ssid = (self.msg_buffer[3..3+ssid_len-1]).asstring()
-        var pwd_len = self.msg_buffer[3+ssid_len]
-        self.pwd = (self.msg_buffer[4+ssid_len..4+ssid_len+pwd_len-1]).asstring()
-        self.then(/->self.provisioning())
+        if self.current_cmd == 1
+            self.useCredentials()
+            self.resetMsgBuffer()
+            return
+        end
+        if self.current_cmd == 2
+            self.deviceReaction()
+            self.resetMsgBuffer()
+            return
+        end
+        if self.current_cmd == 3
+            self.sendDevInfo()
+            self.resetMsgBuffer()
+            return
+        end
+        if self.current_cmd == 4
+            self.sendWifiScan()
+            self.resetMsgBuffer()
+            return
+        end
+        print("Unhandled command", self.current_cmd)
     end
 
     def identify()

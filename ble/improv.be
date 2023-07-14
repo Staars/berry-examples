@@ -17,7 +17,8 @@ var cbuf = bytes(-255)
 class IMPROV : Driver
     var current_func, next_func
     var pin_ready
-    var ssid, pwd, imp_state, msg_buffer, current_cmd
+    var ssid, pwd, imp_state, msg_buffer, current_cmd, sendEmptyAP
+    var send_buffer
     var devInfo, AP_list
     static PIN = "123456" # 🤫
 
@@ -30,21 +31,57 @@ class IMPROV : Driver
         self.pin_ready = false
         self.msg_buffer = []
         self.imp_state = 0x01 # Awaiting authorization via physical interaction.
-        self.devInfo = self.getDevInfoString()
+        self.devInfo = self.getDevInfo()
         self.current_cmd = 0
+        self.sendEmptyAP = false
+        self.AP_list = []
     end
 
     def every_50ms()
         self.current_func()
     end
 
+    def every_100ms()
+        if self.send_buffer != nil
+            if size(self.send_buffer) == 0
+                self.send_buffer = nil
+            else
+                self.sendRPCresult()
+            end
+        else
+            if self.AP_list != nil
+                self.sendAPInfo()
+            end
+        end
+    end
+
     def wait()
+
     end
 
     def then(func)
         # save function pointers for callback, typically expecting a closure
         self.next_func = func
         self.current_func = /->self.wait()
+    end
+
+    def sendRPCresult()
+        # send_buffer holds encoded RPC command
+        if size(self.send_buffer) > 19
+            cbuf[0] = 20
+            cbuf.setbytes(1,self.send_buffer[0..19])
+            self.send_buffer = self.send_buffer[20..]
+            print("Send Buf chunk 20", cbuf[0..20])
+        else
+            cbuf[0] = size(self.send_buffer)
+            cbuf.setbytes(1,self.send_buffer)
+            self.send_buffer = nil
+            print("Send Buf final",cbuf[0..20])
+        end
+        BLE.set_svc("00467768-6228-2272-4663-277478268000")
+        BLE.set_chr("00467768-6228-2272-4663-277478268004")
+        BLE.run(211)
+        # will always be called from wait anyway
     end
 
     def chksum(buf)
@@ -56,7 +93,23 @@ class IMPROV : Driver
         return checksum
     end
 
-    def getDevInfoString()
+    def encodeRPC(cmd, strings) # int, list
+        var buf = bytes("0000")
+        buf[0] = cmd
+        for string:strings
+            var l = size(string) + 1
+            var sbuf = bytes(-(l))
+            sbuf[0] = l - 1
+            buf[1] += l # make sure to not overflow 255
+            sbuf.setbytes(1,bytes().fromstring(string))
+            buf += sbuf
+        end
+        var c = self.chksum(buf)
+        buf.add(c, 1)
+        return buf
+    end
+
+    def getDevInfo()
         import string
         var r =  tasmota.cmd("status 2")
         var v = r["StatusFWR"]["Version"]
@@ -66,30 +119,31 @@ class IMPROV : Driver
         r = tasmota.cmd("status 5")
         var n = r["StatusNET"]["Hostname"]
         var a = tasmota.arch()
-        return f"Tasmota {f}, {v}, {a}, {n}}"
+        return [f,v,a,n]
     end
 
     def startWifiScan()
-        self.AP_list = []
         tasmota.cmd("WiFiScan 1")
     end
 
     def readWifiScan()
         var r = tasmota.cmd("WiFiScan")
         var s = r["WiFiScan"]
-        if  s == "Not Started"
-            return false
-        end 
-        if s == "Scanning"
+        if  s == "Not Started" || s == "Scanning"
+            self.startWifiScan()
             return false
         end
+        self.AP_list = []
         for i:range(1,size(s))
             var e = s[f"NET{i}"]
             var enc = "YES"
             if e["Encryption"] == "OPEN" enc = "NO" end
-            var l = e["SSId"] + ", " +  e["Signal"]  + ", " + enc
-            self.AP_list.push(l)
+            var AP = [e["SSId"],e["Signal"],enc]
+            self.AP_list.push(AP)
         end
+        self.sendEmptyAP = false
+        print(self.AP_list)
+        self.startWifiScan()
     end
 
     def useCredentials()
@@ -101,21 +155,32 @@ class IMPROV : Driver
     end
 
     def deviceReaction()
-        print("Hello")
+        print("Hello .... blink-blink")
         # Blink an LED or something else, but this is very hardware dependant
     end
 
+    def sendAPInfo()
+        if size(self.AP_list) == 0 && self.sendEmptyAP == false
+            return
+        end
+        var buf = bytes("040004") # is the termination command
+        if self.sendEmptyAP == false
+            var AP = self.AP_list[0]
+            self.AP_list = self.AP_list[1..]
+            buf = self.encodeRPC(4,AP)
+            if size(self.AP_list) == 0
+                self.sendEmptyAP = true
+            end   
+        end
+        if self.sendEmptyAP == true
+            self.AP_list = nil
+        end
+        self.send_buffer = buf
+    end
+
     def sendDevInfo()
-        print(self.devInfo)
-    end
-
-    def sendWifiScan()
-        print(self.AP_list)
-    end
-
-    def resetMsgBuffer()
-        self.current_cmd = 0
-        self.msg_buffer = []
+        self.send_buffer = self.encodeRPC(3,self.devInfo)
+        print(self.send_buffer)
     end
 
     def parseRPC()
@@ -141,25 +206,17 @@ class IMPROV : Driver
         end
         if self.current_cmd == 1
             self.useCredentials()
-            self.resetMsgBuffer()
-            return
-        end
-        if self.current_cmd == 2
+        elif self.current_cmd == 2
             self.deviceReaction()
-            self.resetMsgBuffer()
-            return
-        end
-        if self.current_cmd == 3
+        elif self.current_cmd == 3
             self.sendDevInfo()
-            self.resetMsgBuffer()
-            return
-        end
-        if self.current_cmd == 4
-            self.sendWifiScan()
-            self.resetMsgBuffer()
-            return
-        end
+        elif self.current_cmd == 4
+            self.readWifiScan()
+        else
         print("Unhandled command", self.current_cmd)
+        end
+        self.current_cmd = 0
+        self.msg_buffer = []
     end
 
     def identify()
@@ -270,6 +327,7 @@ class IMPROV : Driver
         end
         if op == 227
             print("MAC:",cbuf[1..cbuf[0]])
+            self.startWifiScan()
         end
         if op == 228
             print("Disconnected")
@@ -305,7 +363,7 @@ class IMPROV : Driver
         BLE.run(211)
         self.then(/->self.add_8004())
     end
-    def add_8004() # Identify
+    def add_8004() # Identify/RPC result
         BLE.set_chr("00467768-6228-2272-4663-277478268004")
         cbuf.setbytes(0,bytes("0101"))
         BLE.run(211)

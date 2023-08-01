@@ -40,7 +40,6 @@ class IMPROV : Driver
         self.msg_buffer = []
         self.imp_state = 0x01 # Awaiting authorization via physical interaction.
         self.devInfo = self.getDevInfo()
-        self.AP_list = []
         self.running_WiFi_scan = false
         self.ble_server_up = false
     end

@@ -1,5 +1,5 @@
 #######################################################################
-# BLE Scanner for ESP32 - ESP32C3 - ESP32S3
+# BLE Scanner for every ESP32 with BLE
 #
 # use : `import blescan`
 #
@@ -22,7 +22,7 @@ class BLE_scan_UI
 
     def init()
         import BLE
-        self.buf = bytes(-96)
+        self.buf = bytes(-64)
         self.scan_timer = 0
         self.scan_result = []
         self.stop_scan = false
@@ -46,7 +46,7 @@ class BLE_scan_UI
         var rssi = (255 - self.buf.get(7,1)) * -1
         entry['RSSI'] = rssi
         
-        var idx = 0;
+        var idx = 0
 
         if size(self.scan_result) > 0
             for i:0..size(self.scan_result)-1
@@ -75,15 +75,15 @@ class BLE_scan_UI
               entry['CID']=self.buf.get(i+2,2)
             end
             if _type==8 || _type==9
-              var _name = self.buf[i+2..(i+len)] + bytes('00') # null terminate it
+              var _name = self.buf[i+2..(i+len)]# + bytes('00') # null terminate it
               entry['Name']=_name.asstring()
             end
             i+=len+1
         end
+        print(entry)
         self.scan_result.insert(idx,entry)
         self.update_table=true
     end
-    
     
 
   # create a method for adding a button to the main menu
@@ -99,13 +99,11 @@ class BLE_scan_UI
   #######################################################################
 
   def get_body()
-    import string
     var body = "{\"body\":["
     for i:0..size(self.scan_result)-1
         var entry = self.scan_result[i]
-        var msg_e = string.format("[\"%02X%02X%02X%02X%02X%02X\",\"%02X\",\"%04X\",\"%04X\",\"%04X\",\"%s\",%i]",
-        entry['MAC'][0],entry['MAC'][1],entry['MAC'][2],entry['MAC'][3],
-        entry['MAC'][4],entry['MAC'][5],entry['Type'],entry['SVC_DATA'],entry['CID'],entry['SVC_UUID'],entry['Name'],entry['RSSI'])
+        var msg_e = format("[\"%s\",\"%i\",\"%04x\",\"%04x\",\"%04x\",\"%s\",%i]",
+        entry['MAC'].tohex(),entry['Type'],entry['SVC_DATA'],entry['CID'],entry['SVC_UUID'],entry['Name'],entry['RSSI'])
         body += msg_e
         if i<size(self.scan_result)-1
           body +=","
@@ -117,7 +115,6 @@ class BLE_scan_UI
   
   def show_table()
     import webserver
-    #import string
     var response = "<div style='height:331px;overflow:auto;'><table style='width:640px;'>"
     response += "<tr style='position:sticky;top: 0;background:black;'><th>MAC</th><th>Type</th><th>SVC_D</th><th>CID</th><th>SVC_U</th><th>Name</th><th>RSSI</th></tr>"
     response += "<tbody id='tb'></tbody></table></div>"
@@ -157,7 +154,6 @@ class BLE_scan_UI
   #######################################################################
   def page_ble_scan()
     import webserver
-    import string
     import json
 
     if !webserver.check_privileged_access() return nil end
@@ -220,7 +216,6 @@ class BLE_scan_UI
   #######################################################################
   def page_ble_scan_ctl()
     import webserver
-    import string
     if !webserver.check_privileged_access() return nil end
 
     try
@@ -236,12 +231,12 @@ class BLE_scan_UI
         raise "value_error", "Unknown command"
       end
     except .. as e, m
-      print(string.format("BRY: Exception> '%s' - %s", e, m))
+      print(format("BRY: Exception> '%s' - %s", e, m))
       #- display error page -#
       webserver.content_start("Parameter error")      #- title of the web page -#
       webserver.content_send_style()                  #- send standard Tasmota styles -#
 
-      webserver.content_send(string.format("<p style='width:340px;'><b>Exception:</b><br>'%s'<br>%s</p>", e, m))
+      webserver.content_send(format("<p style='width:340px;'><b>Exception:</b><br>'%s'<br>%s</p>", e, m))
 
       webserver.content_button(webserver.BUTTON_MANAGEMENT) #- button back to management page -#
       webserver.content_send("<p></p>")

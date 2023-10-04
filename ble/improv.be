@@ -77,8 +77,8 @@ class IMPROV : Driver
                 cbuf.setbytes(0,bytes("0104"))
                 BLE.run(211)
                 self.imp_state = 4;
-                self.then(/->self.wait())
-                tasmota.cmd("Backlog SSId1 "+self.ssid+"; Password1 "+self.pwd + "; wifi 1",true) # set and reboot
+                tasmota.cmd("wifi 1",true) # prevent crash
+                self.then(/->self.sendIPaddress())
             else
                 self.testing_wifi = false
                 print("IMP: timeout!!")
@@ -291,6 +291,25 @@ class IMPROV : Driver
          tasmota.cmd("wifi 0",true) # prevent crash
          self.testing_wifi = true
          self.current_func = /->self.wait()
+    end
+
+    def sendIPaddress()
+        var ip = tasmota.wifi()["ip"]
+        print(ip)
+        if !ip return end
+        var buf = self.encodeRPC(1,[ip])
+        print(buf)
+        BLE.set_svc(self.imp_svc)
+        BLE.set_chr(self.result_chr)
+        cbuf.setbytes(1,buf)
+        cbuf[0] = size(buf)
+        BLE.run(211)
+        self.then(/->self.setCredentials())
+    end
+
+    def setCredentials()
+        tasmota.cmd("Backlog SSId1 "+self.ssid+"; Password1 "+self.pwd + "; wifi 1",true) # set and reboot
+        self.next_func = /->self.wait()
     end
 
     def execCmd(c)

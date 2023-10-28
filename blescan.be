@@ -128,7 +128,7 @@ class BLE_scan_UI
   
   def upl_js()
     import webserver
-    var script_start = "<script>var igCC,igCV,igRC,igRV,igTC,igTV,tab;function update(cmnd){if(!cmnd){cmnd='loop=1'}var xr=new XMLHttpRequest();xr.onreadystatechange=()=>{if(xr.readyState==4&&xr.status==200){"
+    var script_start = "<script>var igCC,igCV,igRC,igRV,igTC,igTV,fiSUC,fiSUV,fiSDC,fiSDV,tab;function update(cmnd){if(!cmnd){cmnd='loop=1'}var xr=new XMLHttpRequest();xr.onreadystatechange=()=>{if(xr.readyState==4&&xr.status==200){"
                        "const r=JSON.parse(xr.response);if('body' in r){tab=r;updTable();}else{beat();}"
                        "};};xr.open('GET','/ble_scan?'+cmnd,true);xr.send();};setInterval(update,500);"
     var script_1     = "function clearR(){update('clear=1');eb('tb').innerHTML='';}"
@@ -137,11 +137,17 @@ class BLE_scan_UI
                        "function ignCV(evt){igCV=evt.value;updTable()}"
                        "function ignRC(evt){igRC=evt.checked;updTable()}"
                        "function ignRV(evt){igRV=Number(evt.value);updTable()}"
-                        "function ignTC(evt){igTC=evt.checked;updTable()}"
+                       "function ignTC(evt){igTC=evt.checked;updTable()}"
                        "function ignTV(evt){igTV=Number(evt.value);updTable()}"
+                       "function filSUC(evt){fiSUC=evt.checked;updTable()}"
+                       "function filSUV(evt){fiSUV=evt.value;updTable()}"
+                       "function filSDC(evt){fiSDC=evt.checked;updTable()}"
+                       "function filSDV(evt){fiSDV=evt.value;updTable()}"
     var script_2     = "function beat(){const effect = new KeyframeEffect(eb('hbeat'),[{opacity: 0},{opacity: 1}],{duration: 2000,fill: 'forwards'}"
                         ");const anim = new Animation(effect, document.timeline);anim.play()}"
-                        "function updTable(){var body='',sd=0;for(entry of tab['body']){if((igTC==true && igTV==entry[1])||(igCC==true && igCV.includes(entry[3]))||(igRC==true && igRV>entry[6])){continue;}var row='<tr>';for(el of entry){row+='<td>'+el+'</td>'}row+='</tr>';body+=row;sd+=1;}eb('tb').innerHTML=body;eb('log').innerHTML='Showing '+sd+'/'+tab.body.length+' devices'}"
+                        "function updTable(){var body='',sd=0;for(entry of tab['body']){if((igTC==true && igTV==entry[1])||(igCC==true && igCV.includes(entry[3]))||(igRC==true && igRV>entry[6])){continue;}"
+                        "if((fiSDC==true && fiSDV!=entry[2])||(fiSUC==true && fiSUV!=entry[4])){continue;}"
+                        "var row='<tr>';for(el of entry){row+='<td>'+el+'</td>'}row+='</tr>';body+=row;sd+=1;}eb('tb').innerHTML=body;eb('log').innerHTML='Showing '+sd+'/'+tab.body.length+' devices'}"
                         "</script>"            
 
      webserver.content_send(script_start)
@@ -196,7 +202,10 @@ class BLE_scan_UI
     webserver.content_send("<div class='box side side-1'><p id='hbeat'>Scanning ...</p>")
     webserver.content_send("<input type='checkbox' onclick='actSc(this)'>Active scanning</input><p id='log'></p><br><input type='checkbox' onclick='ignCC(this)'>Ignore CID (in HEX): <input type='text' onchange='ignCV(this)' style='width:auto;' size='12'><br>")
     webserver.content_send("<input type='checkbox' onclick='ignRC(this)'>Ignore RSSI (weaker than): <input type='number' onchange='ignRV(this)' style='width:auto;'  min='-99' max='0'><br>")
-        webserver.content_send("<input type='checkbox' onclick='ignTC(this)'>Ignore (Address) Type: <input type='number' onchange='ignTV(this)' style='width:auto;'  min='0' max='4'><br></div>")
+    webserver.content_send("<input type='checkbox' onclick='ignTC(this)'>Ignore (Address) Type: <input type='number' onchange='ignTV(this)' style='width:auto;'  min='0' max='4'><br>")
+    webserver.content_send("<input type='checkbox' onclick='filSUC(this)'>Filter Service UUID: <input type='text' onchange='filSUV(this)' style='width:auto;'  size='12'><br>")
+    webserver.content_send("<input type='checkbox' onclick='filSDC(this)'>Filter  Service Data: <input type='text' onchange='filSDV(this)' style='width:auto;'  size='12'><br>")
+    webserver.content_send("</div>")
     webserver.content_send(
       "<div class='box side side-2'><br><button onclick='clearR()'>Clear results</button></div>") #- close .box-# 
     

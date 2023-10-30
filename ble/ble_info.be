@@ -8,17 +8,26 @@ class BLE_INFO : Driver
         var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
         self.buf = bytes(-256)
         BLE.conn_cb(cbp,self.buf)
+        tasmota.add_driver(self)
+        print("###########################################################################")
+        print("#                Init TASMOTA BLE device explorer                         #")
+        print("###########################################################################")
+        print(" ")
+    end
+
+    def get(MAC,addr_type)
+        print("___________________________________________________________________________")
+        print(f" Retrieve services and characteristics for BLE device wit MAC:{MAC} ")
+        print("___________________________________________________________________________")
         BLE.set_MAC(bytes(MAC),addr_type)
         BLE.run(6)
-        print("###########################################################################")
-        print("#                TASMOTA BLE device explorer                              #")
-        print("###########################################################################")
     end
 
     def uuid128ToString(uuid)
         return uuid[0..3].tohex()+"-"+uuid[4..5].tohex()+"-"+uuid[6..7].tohex()+"-"+uuid[8..9].tohex()+"-"+uuid[10..15].tohex()
     end
 
+    # BLE GATT properties:
     #define BLE_GATT_CHR_PROP_BROADCAST                     0x01
     #define BLE_GATT_CHR_PROP_READ                          0x02
     #define BLE_GATT_CHR_PROP_WRITE_NO_RSP                  0x04
@@ -45,8 +54,8 @@ class BLE_INFO : Driver
         var i = 2
         self.services = []
         for svc:range(1,self.buf[1])
-            var sz = self.buf[i]/8
-            var uuid = self.buf[(i+1)..(i+sz)].reverse()
+            var sz = self.buf[i]/8                       # 16-bit or 128-bit -> 2 bytes or 16 bytes
+            var uuid = self.buf[(i+1)..(i+sz)].reverse() # depending on line above
             # print(sz,uuid)
             i += 1+sz
             if sz == 2
@@ -63,7 +72,7 @@ class BLE_INFO : Driver
 
     def getCharacteristics()
         print("__________________________")
-        print("Service: UUID",self.services[0])
+        print("Service: UUID:",self.services[0])
         print("    Characteristics:")
         BLE.set_svc(self.services[0])
         BLE.run(7)
@@ -73,15 +82,15 @@ class BLE_INFO : Driver
         var i = 2
         for chr:range(1,self.buf[1])
             var sz = self.buf[i]/8
-            var uuid = self.buf[(i+1)..(i+sz)]
+            var uuid = self.buf[(i+1)..(i+sz)].reverse()
             var flags = self.buf[i+sz+1]
             var handle = self.buf.get(i+sz+2,2)
             if size(uuid) == 2
-                uuid = uuid.reverse().tohex()
+                uuid = uuid.tohex()
             else
-                uuid = self.uuid128ToString(uuid.reverse())
+                uuid = self.uuid128ToString(uuid)
             end
-            print("        UUID:",uuid,f", handle: 0x{handle:04x} ,",self.parseFlags(flags))
+            print("         UUID:",uuid,f", handle: 0x{handle:04x} ,",self.parseFlags(flags))
             i += 4+sz
         end
         if size(self.services) > 1
@@ -91,15 +100,18 @@ class BLE_INFO : Driver
             print("_______________________________________________________________")
             print("Got all services and characteristics of connected BLE device!")
             print("###############################################################")
+            BLE.run(5)
+            print("BLE: disconnect device")
         end
     end
 
     def cb(error,op,uuid)
         if error == 0
-            if op == 6
+            if op == 5
+                print("BLE: did disconnect")
+            elif op == 6
                 self.parseServices()
-            end
-            if op == 7
+            elif op == 7
                 self.parseCharacteristics();
             end
             return
@@ -114,6 +126,8 @@ class BLE_INFO : Driver
 
 end
 
-ble_info = BLE_INFO("112233445566",0) # BLE device MAC and address type
+ble_info = BLE_INFO()
 
-tasmota.add_driver(ble_info)
+# Usage:
+# Berry console: ble_info.get("aabbccddeeff",type) # BLE device MAC and address type
+# or prefixed with 'br ' in the serial console

@@ -49,44 +49,54 @@ class BLE_BPR2S : Driver
 
     def handle_HID_notification(h) 
         import mqtt
-        var key = ""
+        var t = "key"
+        var v = ""
         if h == 42
             var k = self.buf[3]
             if k == 0x65
-                key = "square"
+                v = "square"
             elif k == 0x4f
-                key = "right"
+                v = "right"
             elif k == 0x50
-                key = "left"
+                v = "left"
             elif k == 0x51
-                key = "down"
+                v = "down"
             elif k == 0x52
-                key = "up"
+                v = "up"
             elif k == 0x2a
-                key = "back"
+                v = "back"
             end
         elif h == 38
             var k = self.buf[1]
             if k == 0x30
-                key = "on"
+                v = "on"
             elif k == 0xe2
-                key = "mute"
+                v = "mute"
             elif k == 0x23
-                key = "triangle"
+                v = "triangle"
             elif k == 0x21
-                key = "circle"
+                v = "circle"
             elif k == 0x41
-                key = "set"
+                v = "set"
             elif k == 0x24
-                key = "return"
+                v = "return"
             elif k == 0xea
-                key = "minus"
+                v = "minus"
             elif k == 0xe9
-                key = "plus"
+                v = "plus"
             end
+        elif h == 34
+            t = "mouse"
+            var x = self.buf.geti(1,2) >> 4
+            var y  = (self.buf[2] & 0xf) << 8
+            y  |= self.buf[3]
+            if y > 2048
+                y -= 4096
+            end
+            v = format('{"x":%i,"y":%i}',x,y)
         end
-        if key != ''
-            mqtt.publish("tele/BPR2S",format("{'key':'%s'}",key))
+        if v != ''
+            mqtt.publish("tele/BPR2S",format('{"%s":"%s"}',t,v))
         # else # will be triggered on button release too
         #     print(self.buf[1..self.buf[0]],h) # show the packet as byte buffer
         end
@@ -95,7 +105,7 @@ class BLE_BPR2S : Driver
     def cb(error,op,uuid,handle)
         if error == 0
             if op == 1 # read OP
-                print(op,uuid)
+                # print(op,uuid)
                 self.handle_read_CB(uuid)
             elif op == 3
                 self.connecting = false;

@@ -1,5 +1,5 @@
 #-
- - ULP driver for the Ulanzi clock written in Berry
+ - ULP driver for Ulanzi clock written in Berry
  -
  - Support for analog read of built in battery and light sensor
  - Alternative to xsns_02_analog.ino
@@ -16,8 +16,13 @@ class ULANZI_ADC
 
   def load_ULP()
     import ULP
-    ULP.adc_config(6,3,3) # battery
-    ULP.adc_config(7,3,3) # light
+    if int(tasmota.cmd("status 2")["StatusFWR"]["Core"]) == 2
+      ULP.adc_config(6,3,3) # battery
+      ULP.adc_config(7,3,3) # light
+    else
+      ULP.adc_config(6,3,12) # battery
+      ULP.adc_config(7,3,12) # light
+    end
     ULP.wake_period(0,1000 * 1000) # timer register 0 - every 1000 millisecs
     var c = bytes().fromb64("dWxwAAwAXAAAAAwAcwGAcg4AANAaAAByDgAAaAAAgHIAAEB0HQAAUBAAAHAQAAB0EAAGhUAAwHKDAYByDAAAaAAAgHIAAEB0IQAAUBAAAHAQAAB0EAAGhUAAwHKTAYByDAAAaAAAALA=") 
     ULP.load(c) 

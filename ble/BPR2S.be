@@ -1,5 +1,5 @@
 # Simple Berry driver for the BPR2S Air mouse (a cheap BLE HID controller)
-# TODO: handle mouse mode
+# TODO: use mouse mode for a better example
 
 import BLE
 
@@ -14,6 +14,7 @@ class BLE_BPR2S : Driver
         BLE.set_MAC(bytes(MAC),addr_type)
         print("BLE: will try to connect to BPR2S with MAC:",MAC)
         self.connect()
+        tasmota.add_fast_loop(/-> BLE.loop())
     end
 
     def connect()
@@ -87,13 +88,15 @@ class BLE_BPR2S : Driver
             end
         elif h == 34
             t = "mouse"
-            var x = self.buf.geti(1,2) >> 4
-            var y  = (self.buf[2] & 0xf) << 8
-            y  |= self.buf[3]
+            var x = self.buf.getbits(12,12)
+            if x > 2048
+                x -= 4096
+            end
+            var y = self.buf.getbits(24,12)
             if y > 2048
                 y -= 4096
             end
-            v = format('{"x":%i,"y":%i}',x,y)
+            v = format('{"x":%i,"y":%i}',x,y) # stupid idea to publish from fast_loop, but for demonstration ...
         end
         if v != ''
             mqtt.publish("tele/BPR2S",format('{"%s":"%s"}',t,v))

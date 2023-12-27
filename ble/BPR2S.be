@@ -1,11 +1,11 @@
 # Simple Berry driver for the BPR2S Air mouse (a cheap BLE HID controller)
-# TODO: use mouse mode for a better example
 
 import BLE
 
 class BLE_BPR2S : Driver
     var buf
-    var connecting, connected
+    var connecting, connected, new_position
+    var x,y
 
     def init(MAC,addr_type)
         var cbp = tasmota.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
@@ -14,12 +14,15 @@ class BLE_BPR2S : Driver
         BLE.set_MAC(bytes(MAC),addr_type)
         print("BLE: will try to connect to BPR2S with MAC:",MAC)
         self.connect()
-        tasmota.add_fast_loop(/-> BLE.loop())
+        tasmota.add_fast_loop(/-> BLE.loop()) # needed for mouse position
     end
 
     def connect()
-        self.connecting = true;
-        self.connected = false;
+        self.connecting = true
+        self.connected = false
+        self.new_position = false
+        self.x = 128
+        self.y = 128
         BLE.set_svc("1812")
         BLE.set_chr("2a4a") # the first characteristic we have to read
         BLE.run(1) # read
@@ -32,20 +35,51 @@ class BLE_BPR2S : Driver
         end
     end
 
+    def every_50ms()
+        import mqtt
+        if self.new_position == true
+            mqtt.publish("tele/BPR2S",format('{"mouse":{"x":%s,"y":%s}}',self.x,self.y))
+            self.new_position = false
+        end
+    end
+
     def handle_read_CB(uuid) # uuid is the callback characteristic
         self.connected = true;
     # we just have to read these characteristics before we can finally subscribe
         if uuid == 0x2a4a # did receive HID info
+            print("BLE: now connecting to BPR2S")
             BLE.set_chr("2a4b")
             BLE.run(1) # read next characteristic 
         elif uuid == 0x2a4b # did receive HID report map
             BLE.set_chr("2a4d")
             BLE.run(1) # read to trigger notifications of the HID device
         elif uuid == 0x2a4d # did receive HID report
-            print(self.buf[1..self.buf[0]])
             BLE.set_chr("2a4d")
             BLE.run(3) # subscribe
         end
+    end
+
+    def handle_mouse_pos()
+        var x = self.buf.getbits(12,12)
+        if x > 2048
+            x -= 4096
+        end
+        var y = self.buf.getbits(24,12)
+        if y > 2048
+            y -= 4096
+        end
+
+        self.x += (x >> 7) # some conversion factor
+        self.y += (y >> 7)
+        
+        # could be mapped to hue, saturation, brightness, ...
+        if self.x > 255 self.x = 255
+        elif self.x < 0 self.x = 0
+        end
+        if self.y > 255 self.y = 255
+        elif self.y < 0 self.y = 0
+        end
+        self.new_position = true
     end
 
     def handle_HID_notification(h) 
@@ -87,16 +121,8 @@ class BLE_BPR2S : Driver
                 v = "plus"
             end
         elif h == 34
-            t = "mouse"
-            var x = self.buf.getbits(12,12)
-            if x > 2048
-                x -= 4096
-            end
-            var y = self.buf.getbits(24,12)
-            if y > 2048
-                y -= 4096
-            end
-            v = format('{"x":%i,"y":%i}',x,y) # stupid idea to publish from fast_loop, but for demonstration ...
+            self.handle_mouse_pos()
+            return
         end
         if v != ''
             mqtt.publish("tele/BPR2S",format('{"%s":"%s"}',t,v))
@@ -111,13 +137,15 @@ class BLE_BPR2S : Driver
                 # print(op,uuid)
                 self.handle_read_CB(uuid)
             elif op == 3
-                self.connecting = false;
+                self.connecting = false
+                self.connected = true
                 print("BLE: init completed for BPR2S")
             elif op == 5
-                self.connected = false;
-                self.connecting = false;
+                self.connected = false
+                self.connecting = false
                 print("BLE: did disconnect BPR2S ... will try to reconnect")
             elif op == 103 # notification OP
+                if self.connected == false return end
                 self.handle_HID_notification(handle)
             end
         else

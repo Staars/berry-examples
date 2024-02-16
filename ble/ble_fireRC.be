@@ -1,9 +1,102 @@
-# Simple Berry driver for the Amazon remote control
+# Simple Berry driver for the Amazon remote control (a cheap BLE HID controller)
 
 import BLE
 
+var hid
+
+class HID
+    static hid_service = "1812"
+    var hid_chars
+    static battery_service = "180f"
+    static device_info_service = "180a"
+    var dev_chars
+    var init_step, init_finished
+
+    def init()
+        self.init_step = 0
+        self.init_finished = false
+        self.hid_chars = ["2a4a","2a4b","2a4e","2a4d"]
+        self.dev_chars = ["2A23","2A24","2A25","2A26","2A27","2A28","2A29","2A2a","2A50"]
+        self.nextStep()
+    end
+
+    def nextStep()
+        if self.init_step == 0
+            self.getDeviceInfo()
+        elif self.init_step == 1
+            self.readBattery()
+        elif self.init_step == 2
+            self.initHID()
+        else
+            log("HID: initialized")
+        end
+    end
+
+    def getDeviceInfo()
+        BLE.set_svc(self.device_info_service,true)
+        BLE.set_chr(self.dev_chars[0])
+        if size(self.dev_chars) > 1
+            self.dev_chars = self.dev_chars[1..]
+        else
+            self.init_step += 1
+            self.dev_chars = nil
+        end
+        BLE.run(1)
+    end
+
+
+    def readBattery()
+        BLE.set_svc(self.battery_service)
+        BLE.set_chr("2a19")
+        BLE.run(1)
+        if self.init_finished == false
+            self.init_step += 1
+        end
+    end
+
+    def initHID()
+        BLE.set_svc(self.hid_service)
+        BLE.set_chr(self.hid_chars[0])
+        if size(self.hid_chars) > 1
+            self.hid_chars = self.hid_chars[1..]
+            BLE.run(1)
+        else
+            self.hid_chars = nil
+            BLE.run(3)
+            self.init_step += 1
+            self.init_finished = true
+        end
+    end
+
+    def readCB(error,uuid,handle,buffer)
+        if error != 0
+            log(f"HID: characteristic {uuid:x} not supported")
+        else
+            if uuid == 0x2a23
+                log(f"HID: System ID: {buffer.tohex()}")
+            elif uuid == 0x2a2a
+                log(f"HID: Certification: {buffer.tohex()}")
+            elif uuid == 0x2a50
+                log(f"HID: PNP ID: {buffer.tohex()}")
+            elif self.init_step == 0
+                log(f"HID: device info {uuid:x} : {buffer.asstring()}")
+            elif uuid == 0x2a19
+                log(f"HID: battery: {buffer.tohex()}")
+            elif uuid == 0x2a4a
+                log(f"HID: info: {buffer.tohex()}")
+            elif uuid == 0x2a4b
+                log(f"HID: report map: {buffer.tohex()}")
+            elif uuid == 0x2a4e
+                log(f"HID: protocol mode: {buffer.tohex()}")
+            end 
+        end
+        self.nextStep()
+    end
+end
+
 class BLE_AR : Driver
-    var buf
+    var buf, init_step
+    var audio_buf
     var connecting, connected
 
     def init(MAC,addr_type)
@@ -11,52 +104,25 @@ class BLE_AR : Driver
         self.buf = bytes(-256)
         BLE.conn_cb(cbp,self.buf)
         BLE.set_MAC(bytes(MAC),addr_type)
+        global.hid = HID()
+        self.init_step = 0
+        self.audio_buf = bytes()
         print("BLE: will try to connect to Fire remote with MAC:",MAC)
-        self.connect()
         tasmota.add_fast_loop(/-> BLE.loop()) # needed for mouse position
-    end
-
-    def connect()
-        self.connecting = true
-        self.connected = false
-        BLE.set_svc("1812")
-        BLE.set_chr("2a4a") # the first characteristic we have to read
-        BLE.run(1) # read
-    end
-
-    def readBattery()
-        BLE.set_svc("180f")
-        BLE.set_chr("2a19")
-        BLE.run(1)
     end
 
     def every_second()
         if (self.connecting == false && self.connected == false)
             print("BLE: try to reconnect RC")
-            self.connect()
+            hid.readBattery()
         end
     end
 
     # def every_50ms()
-
     # end
 
-    def handle_read_CB(uuid) # uuid is the callback characteristic
-        self.connected = true;
-    # we just have to read these characteristics before we can finally subscribe
-        if uuid == 0x2a4a # did receive HID info
-            print("BLE: now connecting to FireRC")
-            BLE.set_chr("2a4b")
-            BLE.run(1) # read next characteristic 
-        elif uuid == 0x2a4b # did receive HID report map
-            BLE.set_chr("2a4d")
-            BLE.run(1) # read to trigger notifications of the HID device
-        elif uuid == 0x2a4d # did receive HID report
-            BLE.set_chr("2a4d")
-            BLE.run(3) # subscribe
-        elif uuid == 0x2a19 # did receive HID report
-            print("Battery:",self.buf[1])
-        end
+    def saveAudioFrames()
+        self.audio_buf..self.buf[1..self.buf[0]]
     end
 
     def handle_HID_notification(h) 
@@ -80,6 +146,8 @@ class BLE_AR : Driver
             elif k == 0x58
                 v = "select"
             end
+        elif h == 54
+            self.saveAudioFrames()
         elif h == 50
             var k = self.buf[1]
             if k == 0xe2
@@ -88,6 +156,10 @@ class BLE_AR : Driver
                 v = "home"
             elif k == 0x21
                 v = "micro"
+                var payload = bytes("01")
+                self.buf[0] = size(payload)
+                self.buf.setbytes(1,payload)
+                BLE.run(2,false,0x3e)
             elif k == 0xea
                 v = "minus"
             elif k == 0xe9
@@ -102,7 +174,10 @@ class BLE_AR : Driver
                 v = "play"
             elif k == 0x8d
                 v = "TV"
-                self.readBattery()
+                var payload = bytes("00")
+                self.buf[0] = size(payload)
+                self.buf.setbytes(1,payload)
+                BLE.run(2,false,0x3e)
             end
         elif h == 71
             var k = self.buf[1]
@@ -110,19 +185,19 @@ class BLE_AR : Driver
                 v = "prime"
             elif k == 0xa2
                 v = "netflix"
+                var f = open("audio.opus", "w") # opus??
+                f.write(self.audio_buf)
+                f.close()
             elif k == 0xa3
                 v = "disney"
             elif k == 0xa4
                 v = "hulu"
             end
-        elif h == 34
-            self.handle_mouse_pos()
-            return
         end
         if v != ''
             mqtt.publish("tele/FireRC",format('{"%s":"%s"}',t,v))
-        # else # will be triggered on button release too
-        #     print(self.buf[1..self.buf[0]],h) # show the packet as byte buffer
+        else # will be triggered on button release too
+            print(self.buf[1..self.buf[0]],h) # show the packet as byte buffer
         end
     end
 
@@ -130,8 +205,21 @@ class BLE_AR : Driver
         if error == 0
             if op == 1 # read OP
                 # print(op,uuid)
-                self.handle_read_CB(uuid)
+                hid.readCB(error,uuid,handle,self.buf[1..self.buf[0]])
             elif op == 3
+                if uuid == 0x2A4D
+                    print(0x59)
+                    BLE.set_chr("2aff")
+                    BLE.run(3,false,0x59)
+                    return
+                end
+                if handle == 92
+                    print(0x5c)
+                    BLE.run(3,false,0x5c)
+                    return
+                else
+                    print(handle)
+                end
                 self.connecting = false
                 self.connected = true
                 print("BLE: init completed for FireRC")
@@ -144,7 +232,13 @@ class BLE_AR : Driver
                 self.handle_HID_notification(handle)
             end
         else
-            print("BLE: error:",error)
+            if op == 1 # read OP
+                # print(op,uuid)
+                hid.readCB(error,uuid,handle,self.buf[1..self.buf[0]])
+                return
+            else
+                print("BLE: error:",error)
+            end
             if self.connecting == true
                 print("BLE: init sequence failed ... try to repeat")
                 self.connecting = false

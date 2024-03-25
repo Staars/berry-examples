@@ -22,6 +22,7 @@ var keyGenLeg = module('keyGenLeg')
 # Globals
 #################################################################################
 import math
+import BLE
 
 UUID_SERVICE = "fe95"
 UUID_AUTH = '0001'
@@ -46,12 +47,6 @@ class BLE_keyGenLeg_UI
     var token, rev_MAC, MAC
     var current_func, next_func
     var msg, key, shallSendKey
-
-    def copyBufToPos(target,pos,source)
-        for i:0..size(source)-1
-            target[pos+i] = source[i]
-        end
-    end
 
     def reverseMac(mac)
         var reMAC = bytes(-6)
@@ -110,11 +105,10 @@ class BLE_keyGenLeg_UI
         var index1 = 0
         var index2 = 0
         var _size = size(inp)
-        # print("Size:",_size, inp)
+
         var output = bytes(-_size)
-        var _range = _size-1 
-        for i:0.._range
-            index1 = index1 + 1
+        for i:0.._size-1
+            index1 += 1
             index1 = index1 & 0xff
             index2 += perm[index1]
             index2 = index2 & 0xff
@@ -123,15 +117,15 @@ class BLE_keyGenLeg_UI
             perm[index2] = temp
             var idx = perm[index1] + perm[index2]
             idx = idx & 0xff
-            var outputByte = input[i] ^ perm[idx]
+            var outputByte = inp[i] ^ perm[idx]
             output[i] = outputByte & 0xff
         end
         return output
     end
 
     def cipher(key, inp)
-        var perm = self.cipherInit(key)
-        return self.cipherCrypt(inp, perm)
+        var _perm = self.cipherInit(key)
+        return self.cipherCrypt(inp, _perm)
     end
     
     def generateRandomToken()
@@ -143,8 +137,7 @@ class BLE_keyGenLeg_UI
     end
 
     def init()
-        import BLE
-        var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
+        var cbp = cb.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
         BLE.conn_cb(cbp,buf)
         self.current_func = self.wait
         self.msg = ""
@@ -177,26 +170,19 @@ class BLE_keyGenLeg_UI
     end
     
     def pair(MAC)
-        import string
-        import BLE
         self.MAC = MAC
         self.token = self.generateRandomToken()
-        self.log(string.format("Generated random token: %s",str(self.token)))
+        self.log(format("Generated random token: %s",str(self.token)))
         self.rev_MAC = self.reverseMac(bytes(MAC))
-        self.log(string.format("Try to connect to: %s",MAC))
+        self.log(format("Try to connect to: %s",MAC))
         self.log("Long press pair button, LED should blink shortly!")
         BLE.set_MAC(bytes(MAC),0)
-        BLE.set_svc(UUID_SERVICE)
-        BLE.set_chr(UUID_AUTH_INIT)
-        buf[0] = 4
-        self.copyBufToPos(buf,1,MI_KEY1)
-        BLE.run(2,true)
-        self.then(/->self.func1())
+        BLE.set_svc(UUID_SERVICE,true)
+        BLE.run(7,true)
+        self.then(/->self.authInit())
     end
 
-    def cb(error,op,uuid)
-        import string
-        import BLE
+    def cb(error,op,uuid,handle)
         print("BLE Op:",op,"UUID:",uuid)
         if error == 0
             if op == 103
@@ -206,6 +192,8 @@ class BLE_keyGenLeg_UI
             end
             self.current_func = self.next_func # fulfil our promise ;)
             return
+        else
+            print(error,op,uuid,handle)
         end
         if op == 5
             self.log("Did successfully disconnect.")
@@ -217,67 +205,69 @@ class BLE_keyGenLeg_UI
         end
     end
 
-    def func1()
+    def authInit()
         import BLE
+        BLE.set_chr(UUID_AUTH_INIT)
+        buf.setbytes(1,MI_KEY1)
+        buf[0] = size(MI_KEY1)
+        BLE.run(2,true)
+        self.then(/->self.subscribeAuth())
+    end
+
+    def subscribeAuth()
         self.log("Did connect, subscribe to UUID_AUTH")
         BLE.set_chr(UUID_AUTH)
         BLE.run(3,true)
-        self.then(/->self.func2())
+        self.then(/->self.writeMixToAuth())
     end
-    def func2()
-        import BLE
+    def writeMixToAuth()
         self.log("Write to UUID_AUTH")
+        # self.current_func = self.wait
         BLE.set_chr(UUID_AUTH)
         var _mixA = self.mixA(self.rev_MAC,PID)
         var _buf = self.cipher(_mixA,self.token)
-        self.copyBufToPos(buf,1,_buf)
+        buf.setbytes(1,_buf)
         buf[0] = size(_buf)
-        print("size:", buf[0])
         BLE.run(2,true)
-        self.then(/->self.wait)
+        self.next_func = self.wait
     end
     # virtual func3 is just waiting for the notification in the cb
     def func4()
-        import BLE
-        import string
         BLE.set_chr(UUID_AUTH)
         var _buf = self.cipher(self.token, MI_KEY2)
         print(_buf)
-        self.copyBufToPos(buf,1,_buf)
+        buf.setbytes(1,_buf)
         buf[0] = size(_buf)
         print("size:", buf[0])
         BLE.run(2,true)
-        self.then(/->self.func5())
+        self.then(/->self.readFW())
     end
-    def func5()
-        import BLE
+    def readFW()
         self.log("Will read FW version")
         BLE.set_chr(UUID_FIRMWARE_VERSION)
         BLE.run(1)
-        self.then(/->self.func6())
+        self.then(/->self.readKey())
     end
-    def func6()
-        import BLE
+    def readKey()
         self.log("Got FW version, will read key")
         var fw_version = self.cipher(self.token, buf[1..buf[0]])
         self.log(str(fw_version))
         BLE.set_chr(UUID_BEACON_KEY)
         BLE.run(1)
-        self.then(/->self.func7())
+        self.then(/->self.receiveKey())
     end
-    def func7()
-        import BLE
+    def receiveKey()
         import string
         print("Got key with length:", buf[0])
         var key = self.cipher(self.token, buf[1..buf[0]])
         self.key = string.split(str(key),"'")[1]
-        self.log(string.format("Bind Key: %s", self.key))
+        self.log(format("Bind Key: %s", self.key))
         self.log("Success!! Will disconnect sensor.")
         self.shallSendKey = true;
         BLE.run(5)
-        self.then(/->self.func8())
+        self.then(/->self.addKeyToSensor())
     end
-    def func8()
+    def addKeyToSensor()
         var keyMAC = self.key + self.MAC
         tasmota.cmd("mi32key "+keyMAC)
         self.then(/->self.wait())
@@ -310,8 +300,8 @@ class BLE_keyGenLeg_UI
         if MI32.get_name(i) == "YLKG08"
             var mac = MI32.get_MAC(i)
             var mac_str = string.split(str(mac),"'")[1]
-            webserver.content_send(string.format("<option value=%s>YLKG08 - MAC: %s</option>",mac_str,mac_str))
-            self.log(string.format("Found YLKG08 with MAC: %s",mac_str))
+            webserver.content_send(format("<option value=%s>YLKG08 - MAC: %s</option>",mac_str,mac_str))
+            self.log(format("Found YLKG08 with MAC: %s",mac_str))
         end
     end
     webserver.content_send("</select><br><br>")
@@ -354,13 +344,13 @@ class BLE_keyGenLeg_UI
     if webserver.has_arg("loop")
         if self.shallSendKey==true
             self.shallSendKey=false
-            webserver.content_response(string.format("{\"KEY\":\"%s\"}",self.key))
+            webserver.content_response(format("{\"KEY\":\"%s\"}",self.key))
             return
         end
         if self.msg==''
             webserver.content_response("{\"OK\":[]}")
         else
-            webserver.content_response(string.format("{\"LOG\":\"%s\"}",self.msg))
+            webserver.content_response(format("{\"LOG\":\"%s\"}",self.msg))
             self.msg=''
         end
         return
@@ -420,12 +410,12 @@ class BLE_keyGenLeg_UI
         raise "value_error", "Unknown command"
       end
     except .. as e, m
-      print(string.format("BRY: Exception> '%s' - %s", e, m))
+      print(format("BRY: Exception> '%s' - %s", e, m))
       #- display error page -#
       webserver.content_start("Parameter error")      #- title of the web page -#
       webserver.content_send_style()                  #- send standard Tasmota styles -#
 
-      webserver.content_send(string.format("<p style='width:340px;'><b>Exception:</b><br>'%s'<br>%s</p>", e, m))
+      webserver.content_send(format("<p style='width:340px;'><b>Exception:</b><br>'%s'<br>%s</p>", e, m))
 
       webserver.content_button(webserver.BUTTON_MANAGEMENT) #- button back to management page -#
       webserver.content_send("<p></p>")

@@ -10,7 +10,7 @@ class gpio        # for solidification
   static WS2812
 end    
 
-#@ solidify:ULANIM
+#@ solidify:MATRIX_ANIM
 class MATRIX_ANIM
   var strip
   var positions

@@ -3,17 +3,25 @@
  - very simple animation in the style of Matrix
 -#
 
-class ULANZI_LED
+class Leds end    # for solidification
+
+class gpio        # for solidification
+  static def pin() end 
+  static WS2812
+end    
+
+#@ solidify:ULANIM
+class MATRIX_ANIM
   var strip
   var positions
   var wait
 
   def init()
     import crypto
-    self.strip = Leds.matrix(32,8, gpio.pin(gpio.WS2812, 32))
+    self.strip = Leds(32*8, gpio.pin(gpio.WS2812, 32))
     self.wait = 0
     self.positions = []
-    for i:range(0,31)
+    for i:0..31
       var y = (crypto.random(1)[0]%10) - 3
       if i > 0
         if y == self.positions[i-1]
@@ -25,11 +33,11 @@ class ULANZI_LED
     tasmota.add_driver(self)
   end
 
-  def getPos(x,y,xMax)
+  def getPos(x,y)
     if y & 0x1
-       return y * xMax + (xMax - 1 - x) 
+       return y * 32 + (31 - x) # y * xMax + (xMax - 1 - x) 
     end
-    return y * xMax + x
+    return y * 32 + x # y * xMax + x
   end
 
   def every_50ms()
@@ -45,30 +53,30 @@ class ULANZI_LED
       if y == 9
         self.positions[x] = -3
       else
-        var pos = self.getPos(x,y-1,32)
+        var pos = self.getPos(x,y-1)
         if pos > 0
           s.set_pixel_color(pos,0)
         end
         var color = (200 << 8)
-        pos = self.getPos(x,y,32)
+        pos = self.getPos(x,y)
         if pos > 0
           s.set_pixel_color(pos,color)
         end
         y += 1
         color = (150 << 8)
-        pos = self.getPos(x,y,32)
+        pos = self.getPos(x,y)
         if pos > 0
           s.set_pixel_color(pos,color)
         end
         y += 1
         color = (100 << 8)
-        pos = self.getPos(x,y,32)
+        pos = self.getPos(x,y)
         if pos > 0
           s.set_pixel_color(pos,color)
         end
         y += 1
         color = (50 << 8)
-        pos = self.getPos(x,y,32)
+        pos = self.getPos(x,y)
         if pos > 0
           s.set_pixel_color(pos,color)
         end
@@ -80,4 +88,4 @@ class ULANZI_LED
   end
 end
 
-return ULANZI_LED()
+return MATRIX_ANIM()

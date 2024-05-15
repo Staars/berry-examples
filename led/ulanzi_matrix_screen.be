@@ -3,8 +3,8 @@
  - very simple animation in the style of Matrix
 -#
 
-class Leds end    # for solidification
-class crypto end  # for solidification
+# class Leds end    # for solidification
+# class crypto end  # for solidification
 class gpio        # for solidification
   static def pin() end 
   static WS2812
@@ -87,5 +87,3 @@ class MATRIX_ANIM
     s.show()
   end
 end
-
-return MATRIX_ANIM()

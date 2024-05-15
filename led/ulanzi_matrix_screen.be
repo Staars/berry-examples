@@ -33,6 +33,11 @@ class MATRIX_ANIM
     tasmota.add_driver(self)
   end
 
+  def deinit()
+    self.strip.clear()
+    tasmota.remove_driver(self)
+  end
+
   def getPos(x,y)
     if y & 0x1
        return y * 32 + (31 - x) # y * xMax + (xMax - 1 - x) 

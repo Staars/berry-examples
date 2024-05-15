@@ -1,4 +1,11 @@
+class Leds end    # for solidification
 
+class gpio        # for solidification
+  static def pin() end 
+  static WS2812
+end    
+
+#@ solidify:ULANIM
 class ULANIM
   var cmatrix, clist
   var strip
@@ -164,4 +171,4 @@ class ULANIM
 
 end
 
-var u =  ULANIM()
+# var u =  ULANIM()

@@ -4,7 +4,7 @@
 -#
 
 class Leds end    # for solidification
-
+class crypto end  # for solidification
 class gpio        # for solidification
   static def pin() end 
   static WS2812

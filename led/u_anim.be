@@ -12,7 +12,7 @@ class ULANIM
   var animation, current_animation, delay
 
   def init()
-    self.strip = Leds.matrix(32,8, gpio.pin(gpio.WS2812, 32))
+    self.strip = Leds(32 * 8, gpio.pin(gpio.WS2812, 32))
     self.initCMatrix()
     self.loadAnimation()
     tasmota.add_driver(self)
@@ -45,7 +45,7 @@ class ULANIM
       [0xff0000,8,0,4],
       [0xff0000,7,1,5],
       [0xffffff,8,0,4],
-      [0xffffff,7,1,5],
+      [0xffffff,8,1,5],
       # [0xffffff,16,0,0],
       # [0x919191,32,1,2],
       # [0xff0000,8,0,0],
@@ -73,7 +73,7 @@ class ULANIM
     var mode = self.current_animation[3]
     if mode == 0 || mode == 2
       var last = self.clist[0]
-      for i:range(0,6)
+      for i:0..6
         self.clist[i] = self.clist[i+1]
       end
       self.clist[7] = last
@@ -132,7 +132,7 @@ class ULANIM
 
     # print(f"{r:x} {g:x} {b:x}  {step:x}")
     var clist = [color,0,0,0,0,0,0,0]
-    for i:range(1,7)
+    for i:1..7
       clist[i] = clist[i-1] - step
     end
     if mode == 2 || mode == 3
@@ -147,7 +147,7 @@ class ULANIM
     var setc = /i,c->self.strip.set_pixel_color(i,c)
     var cl = self.clist
     var cm = self.cmatrix
-    for i:range(0,255)
+    for i:0..255
       setc(i,cl[cm[i]])
     end
     self.strip.show()
@@ -156,8 +156,8 @@ class ULANIM
   def initCMatrix()
     var offset = [0]
     self.cmatrix = bytes(-256)
-    for y:range(0,7)
-      for x:range(0,31)
+    for y:0..7
+      for x:0..31
         for o:offset
           if x >= o && x < (32 - o)
             self.cmatrix[32*y + x] = o
@@ -170,5 +170,3 @@ class ULANIM
   end
 
 end
-
-# var u =  ULANIM()

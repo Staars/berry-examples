@@ -277,19 +277,16 @@ end
 
 blescan.BLE_scan_UI = BLE_scan_UI
 
-
-#- create and register driver in Tasmota -#
-if tasmota
+def init(m)
+  import global
+  global.blescan = m
   var ble_scan_ui = blescan.BLE_scan_UI()
   tasmota.add_driver(ble_scan_ui)
   ## can be removed if put in 'autoexec.bat'
-    ble_scan_ui.web_add_handler()
+  ble_scan_ui.web_add_handler()
+  return m
 end
 
+blescan.init = init
+
 return blescan
-
-#- Example
-
-import blescan
-
--#

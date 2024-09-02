@@ -44,7 +44,7 @@ buf = bytes(-64)
 #################################################################################
 class BLE_keyGenLeg_UI
 
-    var token, rev_MAC, MAC
+    var token, rev_MAC, MAC, fw_version
     var current_func, next_func
     var msg, key, shallSendKey
 
@@ -250,8 +250,8 @@ class BLE_keyGenLeg_UI
     end
     def readKey()
         self.log("Got FW version, will read key")
-        var fw_version = self.cipher(self.token, buf[1..buf[0]])
-        self.log(str(fw_version))
+        self.fw_version = self.cipher(self.token, buf[1..buf[0]]).asstring()
+        self.log(self.fw_version)
         BLE.set_chr(UUID_BEACON_KEY)
         BLE.run(1)
         self.then(/->self.receiveKey())
@@ -262,6 +262,15 @@ class BLE_keyGenLeg_UI
         var key = self.cipher(self.token, buf[1..buf[0]])
         self.key = string.split(str(key),"'")[1]
         self.log(format("Bind Key: %s", self.key))
+        if int(self.fw_version) == 1
+            self.log("Old firmware type ... will convert key to:")
+            var _s = string.split(self.key,12)
+            self.key = _s[0] + "8D3D3C97" + _s[1]
+        else
+            self.log("New firmware typee ... will convert key to:")
+            self.key += "FFFFFFFF"
+        end
+        self.log(self.key)
         self.log("Success!! Will disconnect sensor.")
         self.shallSendKey = true;
         BLE.run(5)

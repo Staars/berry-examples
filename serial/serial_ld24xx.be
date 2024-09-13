@@ -241,7 +241,7 @@ class LD2420
             end
             var energy = self.gates.get((i*2)+2,2)
             gate_energies += f"{energy}]"
-            msg = string.format(",\"LD2420\":{\"presence\":%i,\"range\":%i,,\"gates\":%s}",
+            msg = string.format(",\"LD2420\":{\"presence\":%i,\"range\":%i,\"gates\":%s}",
                 self.presence, self.range, gate_energies)
         end
         tasmota.response_append(msg)

@@ -105,31 +105,27 @@ class LD2412
         # F4 F3 F2 F1 0B 00 02 AA 02 54 00 00 00 00 64 55 00 F8 F7 F6 F5 - Stationary target
         # header     |len  |dt|hd|st|movin|me|stati|se|tr|ck|trailer
         # if self.buf[9] != 0
-            if buf[6] == 2
-                if buf[8] & 1
-                    self.moving_distance = buf.get(9,2)
-                    self.moving_energy = buf[11]
-                    self.mode = 1 # standard mode
-                end
-                if buf[8] & 2
-                    self.static_distance = buf.get(12,2)
-                    self.static_energy = buf[14]
-                    self.mode = 1 # standard mode
-                end
-            elif buf[6] == 1
-                self.mode = 2 # engineering mode
-        #  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 .. 25 26 27 28 29 30 .. 39 46 47 48 49 50
-        # F4 F3 F2 F1 2b 00 01 AA 02 00 00 00 00 00 00 .. 00 0D 0D 00 03 02 .. 00 55 00 F8 F7 F6 F5
-        #len header  |len  |dt|hd|mm|ms|mov distgate 0 .. n |mov dist gate 0 .. n|tr|ck|trailer
-                self.max_mov_gate = buf[8]
-                self.max_stat_gate = buf[9]
-                self.mov_gate_energies = buf[10..23]
-                self.stat_gate_energies = buf[24..37]
+            self.mode = buf[6] # standard mode 2 and engin mode 1
+            if buf[8] & 1
+                self.moving_distance = buf.get(9,2)
+                self.moving_energy = buf[11]
+            end
+            if buf[8] & 2
+                self.static_distance = buf.get(12,2)
+                self.static_energy = buf[14]
+            end
+            if buf[6] == 1
+        #  0  1  2  3 ...                  15 16 17 ...           30 31 ..              44 45 46 47 48 49 50
+        # F4 F3 F2 F1 2b 00 01 AA 02 ..    0d 0d 00 00 00.. 00 0D 0D 00 ..                 55 00 F8 F7 F6 F5
+        #len header  |all from mode 1     |mm|ms|mov distgate 0 .. n |mov dist gate 0 .. n|li|re|trailer
+                self.max_mov_gate = buf[15]
+                self.max_stat_gate = buf[16]
+                # maybe the next sections depend on the 2 values above?
+                self.mov_gate_energies = buf[17..30]
+                self.stat_gate_energies = buf[31..44]
                 if buf[4] > 0x29
-                    self.light = buf[38]
+                    self.light = buf[45] # not lux, 0-255
                 end
-                # log("LD412: engineering mode")
-                # print(buf)
             end
         # else
         #     # print(self.buf[1..self.buf[0]])
@@ -146,31 +142,37 @@ class LD2412
         if self.mode == nil return nil end
         import string
         var msg
-        if self.mode == 1
+        if self.mode != 0
             msg = string.format(
                     "{s}LD2412 moving distance{m}%u cm{e}"..
                     "{s}LD2412 static distance{m}%u cm{e}",
                     self.moving_distance,self.static_distance)
-        elif self.mode == 2
-            msg = string.format(
+        end
+        if self.mode == 1
+            msg += string.format(
                 "{s}LD2412 max moving gate{m}%u{e}"..
                 "{s}LD2412 max static gate{m}%u{e}",
                 self.max_mov_gate, self.max_stat_gate)
             if self.light != nil
-                msg += f"{{s}}LD2412 light{{m}}{self.light} lx{{e}}"
+                msg += f"{{s}}LD2412 light{{m}}{self.light}{{e}}"
             end
+            msg += "{s}LD2412 moving gate energies{m}{e}{s}"
             var i = 0
-            while i < self.MAX_GATES + 1
-                var energy = self.mov_gate_energies[i]
-                msg += f"{{s}}LD2412 moving gate {i}{{m}}{energy}{{e}}"
+            while i < self.MAX_GATES
+                var energy = (self.mov_gate_energies[i] >> 4) + 1
+                if energy > 8 energy = 8 end
+                msg += f"&#x258{energy} "
                 i += 1
             end
+            msg += "{m}{e}{s}LD2412 static gate energies{m}{e}{s}"
             i = 0
-            while i < self.MAX_GATES + 1
-                var energy = self.stat_gate_energies[i]
-                msg += f"{{s}}LD2412 stat gate {i}{{m}}{energy}{{e}}"
+            while i < self.MAX_GATES
+                var energy = (self.stat_gate_energies[i] >> 4) + 1
+                if energy > 8 energy = 8 end
+                msg += f"&#x258{energy} "
                 i += 1
             end
+            msg += "{m}{e}"
         end
         tasmota.web_send_decimal(msg)
     end
@@ -180,9 +182,22 @@ class LD2412
         if self.mode == nil return nil end
         import string
         var msg
+        var engin_msg = ""
         if self.mode == 1
-            msg = string.format(",\"LD2412\":{\"distance\":[%i,%i],\"energy\":[%i,%i]}",
-            self.moving_distance, self.static_distance, self.moving_energy,self.static_energy)
+            var moving, statics = []
+            var i = 0
+            while i < self.MAX_GATES
+                var m_energy = self.mov_gate_energies[i]
+                var s_energy = self.stat_gate_energies[i]
+                moving.push(m_energy)
+                statics.push(s_energy)
+                i += 1
+            end
+            engin_msg =f",\"moving_energies\":{moving}\"static_energies\":{statics}"
+        end
+        if self.mode != 0
+            msg = string.format(",\"LD2412\":{\"distance\":[%i,%i],\"energy\":[%i,%i]}%s",
+            self.moving_distance, self.static_distance, self.moving_energy,self.static_energy,engin_msg)
         end
         tasmota.response_append(msg)
     end

@@ -397,7 +397,8 @@ class LD2412 : Driver
         var msg
         var engin_msg = ""
         if self.mode == 1
-            var moving, statics = []
+            var moving = []
+            var statics = []
             var i = 0
             while i < self.MAX_GATES
                 var m_energy = self.mov_gate_energies[i]
@@ -407,6 +408,9 @@ class LD2412 : Driver
                 i += 1
             end
             engin_msg =f",\"moving_energies\":{moving}\"static_energies\":{statics}"
+            if self.light != nil
+                engin_msg += f",\"light\":{self.light}"
+            end
         end
         if self.mode != 0
             msg = string.format(",\"LD2412\":{\"distance\":[%i,%i],\"energy\":[%i,%i]}%s",

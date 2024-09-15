@@ -407,13 +407,13 @@ class LD2412 : Driver
                 statics.push(s_energy)
                 i += 1
             end
-            engin_msg =f",\"moving_energies\":{moving}\"static_energies\":{statics}"
+            engin_msg =f",\"moving_energies\":{moving},\"static_energies\":{statics}"
             if self.light != nil
                 engin_msg += f",\"light\":{self.light}"
             end
         end
         if self.mode != 0
-            msg = string.format(",\"LD2412\":{\"distance\":[%i,%i],\"energy\":[%i,%i]}%s",
+            msg = string.format(",\"LD2412\":{\"distance\":[%i,%i],\"energy\":[%i,%i]%s}",
             self.moving_distance, self.static_distance, self.moving_energy,self.static_energy,engin_msg)
         end
         tasmota.response_append(msg)

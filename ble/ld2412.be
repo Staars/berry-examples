@@ -1,5 +1,4 @@
 #-
-  WIP ... very unfinished!
   LF2412.be - HLK-LD2412 24GHz smart wave motion sensor support for Tasmota via BLE and Berry
   port of xsns_102_ld2410.ino from Theo Arends
   SPDX-FileCopyrightText: 2022 Christian Baars
@@ -22,6 +21,8 @@ class LD2412 : Driver
     static CMND_SET_BAUDRATE         = 0xA1
     static CMND_FACTORY_RESET        = 0xA2
     static CMND_REBOOT               = 0xA3
+    static CMND_SET_DIST_RES         = 0xAA
+    static CMND_GET_DIST_RES         = 0xAB
 
     static CMND_BLE_NOTIFY           = 0xA8     # not needed for LD2412
 
@@ -32,12 +33,21 @@ class LD2412 : Driver
 
     var moving_distance
     var moving_energy
+    var moving_gate_energies
     var static_distance
     var static_energy
-    var detect_distance
+    var static_gate_energies
+
     var moving_sensitivity
     var static_sensitivity
     var sensitivity_counter
+
+    var mode
+    var max_mov_gate
+    var max_stat_gate
+    var mov_gate_energies
+    var stat_gate_energies
+    var light
 
     def sendBLE(packet)
         import BLE
@@ -137,6 +147,13 @@ class LD2412 : Driver
         self.then(/->self.setCfgMode(false))
     end
 
+    def setDistRes(res)
+        var payload = bytes("0000")
+        payload[0] = res
+        self.sendCMD(self.CMND_SET_DIST_RES,payload)
+        self.then(/->self.setCfgMode(false))
+    end
+
     def setMaxDistAndNoOneDur(max_mov_dist_range, max_stat_dist_range, no_one_duration)
         var val = bytes(-18)
         val[2] = max_mov_dist_range
@@ -215,24 +232,32 @@ class LD2412 : Driver
 
     def handleTRG()
         # BLE buffer shifted one byte to the right
-        #  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23
-        # 17 F4 F3 F2 F1 0D 00 02 AA 00 00 00 00 00 00 37 00 00 55 00 F8 F7 F6 F5 - No target
-        # 17 F4 F3 F2 F1 0D 00 02 AA 03 46 00 34 00 00 3C 00 00 55 00 F8 F7 F6 F5 - Movement and Stationary target
-        # 17 F4 F3 F2 F1 0D 00 02 AA 02 54 00 00 00 00 64 00 00 55 00 F8 F7 F6 F5 - Stationary target
-        #len header     |len  |dt|hd|st|movin|me|stati|se|detec|tr|ck|trailer
+        #  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21
+        # 17 F4 F3 F2 F1 0B 00 02 AA 00 00 00 00 00 00 37 55 00 F8 F7 F6 F5 - No target
+        # 17 F4 F3 F2 F1 0B 00 02 AA 03 46 00 34 00 00 3C 55 00 F8 F7 F6 F5 - Movement and Stationary target
+        # 17 F4 F3 F2 F1 0B 00 02 AA 02 54 00 00 00 00 64 55 00 F8 F7 F6 F5 - Stationary target
+        #len header     |len  |dt|hd|st|movin|me|stati|se|tr|ck|trailer
+
+        self.mode = self.buf[7]
+
         if self.buf[9] != 0
-            if self.buf[7] == 2
-                self.moving_distance = self.buf.get(10,2)
-                self.moving_energy = self.buf[12];
-                self.static_distance = self.buf.get(13,2)
-                self.static_energy = self.buf[15];
-                self.detect_distance = self.buf.get(16,2)
-            else
-                log("LD2: engineering mode")
-            end
-        else
-            # print(self.buf[1..self.buf[0]])
+            self.moving_distance = self.buf.get(10,2)
+            self.moving_energy = self.buf[12];
+            self.static_distance = self.buf.get(13,2)
+            self.static_energy = self.buf[15];
         end
+
+        if self.buf[7] == 1
+            self.max_mov_gate = self.buf[16]
+            self.max_stat_gate = self.buf[17]
+            # maybe the next sections depend on the 2 values above?
+            self.mov_gate_energies = self.buf[18..31]
+            self.stat_gate_energies = self.buf[32..45]
+            if self.buf[5] > 0x29
+                self.light = self.buf[46] # not lux, 0-255
+            end
+        end
+
     end
 
     def handle_noti()
@@ -252,10 +277,10 @@ class LD2412 : Driver
                 return
             end
             self.current_func = self.next_func
-            log("BLE: Op: {op}",3)
+            log(f"BLE: Op: {op}",3)
             return
         end
-        log("BLE: Error: {error}",1)
+        log(f"BLE: Error: {error}",1)
     end
 
     def serviceSensitivities()
@@ -318,24 +343,75 @@ class LD2412 : Driver
         tasmota.resp_cmnd({"Engineering mode":payload})
     end
 
+    def cmndDistRes(cmd, idx, payload, payload_json)
+        var pl = int(payload)
+        self.setCfgMode(true)
+        self.then(/->self.setDistRes(pl))
+        tasmota.resp_cmnd({"Distance resolution":payload})
+    end
+
     #- display sensor value in the web UI -#
     def web_sensor()
-        if self.moving_distance == nil return nil end
+        if self.mode == nil return nil end
         import string
-        var msg = string.format(
-                 "{s}LD2412 moving distance{m}%u cm{e}"..
-                 "{s}LD2412 static distance{m}%u cm{e}"..
-                 "{s}LD2412 detect distance{m}%u cm{e}",
-                 self.moving_distance,self.static_distance, self.detect_distance)
+        var msg
+        if self.mode != 0
+            msg = string.format(
+                    "{s}LD2412 moving distance{m}%u cm{e}"..
+                    "{s}LD2412 static distance{m}%u cm{e}",
+                    self.moving_distance,self.static_distance)
+        end
+        if self.mode == 1
+            msg += string.format(
+                "{s}LD2412 max moving gate{m}%u{e}"..
+                "{s}LD2412 max static gate{m}%u{e}",
+                self.max_mov_gate, self.max_stat_gate)
+            if self.light != nil
+                msg += f"{{s}}LD2412 light{{m}}{self.light}{{e}}"
+            end
+            msg += "{s}LD2412 moving gate energies{m}{e}{s}"
+            var i = 0
+            while i < self.MAX_GATES
+                var energy = (self.mov_gate_energies[i] >> 4) + 1
+                if energy > 8 energy = 8 end
+                msg += f"&#x258{energy} "
+                i += 1
+            end
+            msg += "{m}{e}{s}LD2412 static gate energies{m}{e}{s}"
+            i = 0
+            while i < self.MAX_GATES
+                var energy = (self.stat_gate_energies[i] >> 4) + 1
+                if energy > 8 energy = 8 end
+                msg += f"&#x258{energy} "
+                i += 1
+            end
+            msg += "{m}{e}"
+        end
         tasmota.web_send_decimal(msg)
       end
     
       #- add sensor value to teleperiod -#
       def json_append()
-        if self.moving_distance == nil return nil end
+        if self.mode == nil return nil end
         import string
-        var msg = string.format(",\"LD2412\":{\"distance\":[%i,%i,%i],\"energy\":[%i,%i]}",
-        self.moving_distance, self.static_distance, self.detect_distance, self.moving_energy,self.static_energy)
+        var msg
+        var engin_msg = ""
+        if self.mode == 1
+            var moving, statics = []
+            var i = 0
+            while i < self.MAX_GATES
+                var m_energy = self.mov_gate_energies[i]
+                var s_energy = self.stat_gate_energies[i]
+                moving.push(m_energy)
+                statics.push(s_energy)
+                i += 1
+            end
+            engin_msg =f",\"moving_energies\":{moving}\"static_energies\":{statics}"
+        end
+        if self.mode != 0
+            msg = string.format(",\"LD2412\":{\"distance\":[%i,%i],\"energy\":[%i,%i]}%s",
+            self.moving_distance, self.static_distance, self.moving_energy,self.static_energy,engin_msg)
+        end
         tasmota.response_append(msg)
       end
 end
@@ -347,3 +423,4 @@ tasmota.add_cmd('LD2412Duration',/c,i,p,j->ld2412.cmndDuration(c,i,p,j))
 tasmota.add_cmd('LD2412MovingSens',/c,i,p,j->ld2412.cmndMovingSens(c,i,p,j))
 tasmota.add_cmd('LD2412StaticSens',/c,i,p,j->ld2412.cmndStaticSens(c,i,p,j))
 tasmota.add_cmd('LD2412EngMode',/c,i,p,j->ld2412.cmndEngMode(c,i,p,j))
+tasmota.add_cmd('LD2412DistRes',/c,i,p,j->ld2412.cmndDistRes(c,i,p,j))

@@ -45,7 +45,7 @@ class NRFUART : Driver
     def sendTX(r)
         var resp_left = nil
         if size(r) > size(cbuf) - 2
-            log(f"message too large with {size(r)} chars!! ... will cut it",2)
+            log(f"message too large with {size(r)} chars!! ... will cut it",3)
             resp_left = r[253..]
             r = r[0..253]
         end

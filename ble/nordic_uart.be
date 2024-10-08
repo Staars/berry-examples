@@ -1,6 +1,9 @@
 #------------------------------------------------------------------------------
 - NRF Connect UART 2 Tasmota
--
+- use with App NRF Toolbox - Nordic UART Service
+- use Log console
+- first command must be '123456' as PIN at application level
+- phone app will show direct command response, not the whole log
 -------------------------------------------------------------------------------#
 
 import BLE

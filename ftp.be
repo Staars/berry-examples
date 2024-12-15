@@ -3,7 +3,10 @@
 #  only light error handling
 -#
 
-#@ solidify:FTP
+#@ solidify:ftp
+
+var ftp = module('ftp')
+
 class PATH    # helper class to hold the current directory 
     var p  #  path components in a list
 
@@ -68,7 +71,7 @@ class FTP
         self.readDir()
         self.data_ptr = 0
         self.active_port = nil
-        tasmota.add_driver(self)
+        # tasmota.add_driver(self)
         log(f"FTP: init server on port {self.port}",1)
     end
 
@@ -562,4 +565,14 @@ class FTP
     end
 end
 
-var ftp =  FTP()
+def init(m)
+    import global
+    global.ftp = m
+    var ftp_driver = FTP()
+    tasmota.add_driver(ftp_driver)
+    return m
+  end
+  
+ftp.init = init
+
+return ftp

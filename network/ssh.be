@@ -166,11 +166,11 @@ class SFTP_FILE
 
     def init(url, pflags)
         import path
-        # if path.exists(url) != true
-        #     if !pflags&1 && !pflags&4
-        #         return nil
-        #     end
-        # end
+        if path.exists(url) != true
+            if !pflags&1 && !pflags&4
+                return nil
+            end
+        end
         if pflags&1
            self.file = open(url,"r")
            print("SFTP: open file for read",url)
@@ -216,6 +216,7 @@ class SFTP
     static READ     = 5
     static WRITE    = 6
     static FSETSTAT = 10
+    static REALPATH = 16
     static STAT     = 17
     static STATUS   = 101
     static ATTRS    = 105
@@ -240,7 +241,26 @@ class SFTP
         attr.add(sz,-4)
         attr.add(date,-4) # TODO: atime check if better option possible
         attr.add(date,-4)
-        attr .. bytes(-8) # two empty strings
+        # extended count (4 bytes) - no extended attributes
+        attr.add(0, -4)
+        # attr .. bytes(-8) # two empty strings
+        return attr
+    end
+
+    def attr_for_dir(date)
+        var attr = bytes(32)
+        var flags = 0x0000000C  # permissions + acmodtime flags
+        attr.add(flags, -4)  # add flags
+        # permissions (4 bytes) - directory permissions
+        var perms = 0x41ED    # drwxr-xr-x (0755)
+        attr.add(perms, -4)   # add permissions
+        # atime (4 bytes) - access time
+        attr.add(date, -4)
+        # mtime (4 bytes) - modification time  
+        attr.add(date, -4)
+        # extended count (4 bytes) - no extended attributes
+        attr.add(0, -4)
+        
         return attr
     end
 
@@ -264,7 +284,7 @@ class SFTP
     def stat_for_file(id, url)
         import path
         var fsize = -1
-        var fdate = -1
+        var fdate = 0
         if path.exists(url)
             var ptype = bytes() .. SFTP.ATTRS
             if !path.isdir(url)
@@ -274,7 +294,7 @@ class SFTP
                 f.close()
                 return ptype + id + self.attr_for_file(fsize,fdate)
             end
-            return ptype + id + bytes(-4) # dir , no idea if correct way
+            return ptype + id + self.attr_for_dir(fdate) # dir , no idea if correct way \\ 
         end
         return self.status(id, 2) # NO_SUCH_FILE
     end
@@ -294,16 +314,15 @@ class SFTP
         var id = d[5..8]
         print("SFTP: type, id, data",ptype,id, d)
         if ptype == SFTP.INIT
-            r = bytes('0000000d02000000030000000000000000') # no extended data support, ver 3
+            r = bytes('000000050200000003') # no extended data support, ver 3
         elif ptype == SFTP.STAT
-            print("SFTP STAT")
-            var url = d[13..]
-            var _r = self.stat_for_file(id,url.asstring())
+            var url = d[13..].asstring()
+            print("SFTP STAT for:",url) 
+            var _r = self.stat_for_file(id,url)
             r.add(size(_r),-4)
             r .. _r
-            print(id,url.asstring())
+            print(id,url)
         elif ptype == SFTP.OPEN
-            print("SFTP OPEN")
             var next_index = 9
             var next_length = SSH_MSG.get_item_length(d[next_index..])
             var url = SSH_MSG.get_string(d, next_index, next_length)
@@ -311,6 +330,7 @@ class SFTP
             var pflags = d.geti(next_index,-4)
             next_index += 4
             var attr = d[next_index..]
+            print("SFTP OPEN:",url,pflags,attr)
             r = self.open_file(id,url,pflags,attr)
             print(r,id,url)
         elif ptype == SFTP.WRITE
@@ -327,6 +347,9 @@ class SFTP
             r = self.status(id, 0) # SSH_FX_OK
             self.file.close()
             self.file = nil
+        elif ptype == SFTP.REALPATH
+            #ignore for now
+            r = self.status(id, 0) # SSH_FX_OK
         elif ptype == SFTP.FSETSTAT
             #ignore for now
             r = self.status(id, 0) # SSH_FX_OK

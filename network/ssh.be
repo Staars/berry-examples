@@ -155,7 +155,7 @@ class PATH    # helper class to hold the current directory
 end
 
 class SFTP_FILE
-    var url, file
+    var url, file, length, written
 
     #define SSH_FXF_READ            0x00000001
     #define SSH_FXF_WRITE           0x00000002
@@ -167,7 +167,7 @@ class SFTP_FILE
     def init(url, pflags)
         import path
         if path.exists(url) != true
-            if !pflags&1 && !pflags&4
+            if pflags&1 == false && pflags&4 == false
                 return nil
             end
         end
@@ -184,8 +184,20 @@ class SFTP_FILE
     def write(data, offset)
         print("SFTP: write file",data, offset)
         self.file.seek(offset)
+        if self.length == nil
+            self.length = data.geti(0,-2)
+            print("SFTP: set length",self.length)
+        end
         if self.file
+            self.written = size(data) - 4
             return self.file.write(data[4..]) # skip length
+        end
+    end
+
+    def append(data)
+        if self.file
+            self.written += size(data)
+            return self.file.write(data)
         end
     end
 
@@ -237,13 +249,13 @@ class SFTP
     end
 
     def attr_for_file(sz, date)
-        var attr = bytes("0000000900000000")
-        attr.add(sz,-4)
-        attr.add(date,-4) # TODO: atime check if better option possible
+        var attr = bytes("0000000d")  
+        attr.add(0x8180, -4) # permissions 
+        attr.add(0, -4)      # high bytes
+        attr.add(sz,-4)      # is uint64
         attr.add(date,-4)
-        # extended count (4 bytes) - no extended attributes
-        attr.add(0, -4)
-        # attr .. bytes(-8) # two empty strings
+        attr.add(date,-4)
+        attr.add(0, -4) # extended count (4 bytes) - no extended attributes
         return attr
     end
 
@@ -251,15 +263,11 @@ class SFTP
         var attr = bytes(32)
         var flags = 0x0000000C  # permissions + acmodtime flags
         attr.add(flags, -4)  # add flags
-        # permissions (4 bytes) - directory permissions
-        var perms = 0x41ED    # drwxr-xr-x (0755)
+        var perms = 0x41ED    # drwxr-xr-x (0755) - directory permissions!!
         attr.add(perms, -4)   # add permissions
-        # atime (4 bytes) - access time
-        attr.add(date, -4)
-        # mtime (4 bytes) - modification time  
-        attr.add(date, -4)
-        # extended count (4 bytes) - no extended attributes
-        attr.add(0, -4)
+        attr.add(date, -4)    # atime (4 bytes) - access time
+        attr.add(date, -4)    # mtime (4 bytes) - modification time  
+        attr.add(0, -4)      # extended count (4 bytes) - no extended attributes
         
         return attr
     end
@@ -281,20 +289,25 @@ class SFTP
         return h
     end
 
-    def stat_for_file(id, url)
+    def stat_for_url(id, url)
         import path
         var fsize = -1
         var fdate = 0
         if path.exists(url)
-            var ptype = bytes() .. SFTP.ATTRS
+            var r = bytes("00000000") # size
+            r .. SFTP.ATTRS
+            r..id
             if !path.isdir(url)
+                print("SFTP: stat for file",url)
                 var f = open(url,"r")
                 fsize = f.size()
                 fdate = path.last_modified(f)
                 f.close()
-                return ptype + id + self.attr_for_file(fsize,fdate)
+                r.. self.attr_for_file(fsize,fdate)
             end
-            return ptype + id + self.attr_for_dir(fdate) # dir , no idea if correct way \\ 
+            r .. self.attr_for_dir(fdate) # dir , no idea if correct way \\ 
+            r.seti(0,size(r)-4,-4)
+            return r
         end
         return self.status(id, 2) # NO_SUCH_FILE
     end
@@ -305,11 +318,16 @@ class SFTP
             return self.handle(id,url)
         end
         return self.status(id, 2) # NO_SUCH_FILE
-        
     end
 
     def process(d)
-        var r = bytes() 
+        var r = bytes()
+        if self.file
+            if self.file.length && self.file.length > self.file.written
+                self.file.append(d)
+                return ""
+            end
+        end
         var ptype = d[4] # https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-3
         var id = d[5..8]
         print("SFTP: type, id, data",ptype,id, d)
@@ -318,10 +336,8 @@ class SFTP
         elif ptype == SFTP.STAT
             var url = d[13..].asstring()
             print("SFTP STAT for:",url) 
-            var _r = self.stat_for_file(id,url)
-            r.add(size(_r),-4)
-            r .. _r
-            print(id,url)
+            r = self.stat_for_url(id,url)
+            print(id,r)
         elif ptype == SFTP.OPEN
             var next_index = 9
             var next_length = SSH_MSG.get_item_length(d[next_index..])
@@ -341,17 +357,22 @@ class SFTP
             var offset = d.geti(next_index,-4) # uint64
             next_index += 8
             var data = d[next_index..]
+            print("SFTP WRITE:",url,offset,data)
             self.file.write(data,offset) # Todo: check success
             r = self.status(id, 0) # SSH_FX_OK
         elif ptype == SFTP.CLOSE
+            print("SFTP CLOSE")
             r = self.status(id, 0) # SSH_FX_OK
             self.file.close()
             self.file = nil
         elif ptype == SFTP.REALPATH
+            print("SFTP REALPATH")
             #ignore for now
             r = self.status(id, 0) # SSH_FX_OK
         elif ptype == SFTP.FSETSTAT
+            print("SFTP FSETSTAT")
             #ignore for now
+            self.file.close()
             r = self.status(id, 0) # SSH_FX_OK
         else
             print("SFTP: unknown packet type", ptype)
@@ -372,11 +393,11 @@ class BIN_PACKET
         self.expected_length = self.packet_length + 4
         if encrypted == true
             self.packet_length = self.get_length(buf)
-            # print("length",self.packet_length)
+            print("SSH: new bin_packet with length",self.packet_length)
             self.expected_length = self.packet_length + 4 + 16 # mac
             if session == nil print("session is nil") end
         end
-        if self.expected_length > 4096
+        if self.expected_length > 32768
             print("Unusual high packet length - assume decoding error!!", self.expected_length)
             self.expected_length = size(buf)
             self.packet_length = size(buf) - 20
@@ -439,6 +460,7 @@ class BIN_PACKET
             self.session.overrun_buf = self.buf[self.expected_length ..]
         end
         if size(self.buf) >= self.expected_length
+            print("SSH: got complete packet",self.expected_length, size(self.buf))
             self.complete = true
             if self.encrypted == true
                 self.check_packet()
@@ -681,8 +703,6 @@ class HANDSHAKE
                     print("SSH: unknown packet type", self.bin_packet.payload[0])
                 end
                 self.bin_packet = nil
-            else
-                self.session.seq_nr_rx -= 1 # TODO: check
             end
             return response
         elif self.state == 2
@@ -701,6 +721,8 @@ class SESSION
     var seq_nr_rx, seq_nr_tx, channel_nr
     var send_queue, overrun_buf
     var type # terminal or SFTP
+
+    static MAX_PACKET_SIZE = 4096 # we must process the whole packet (crypt, auth, etc)
 
     static user = "admin"
     static password = "1234"
@@ -820,7 +842,7 @@ class SESSION
         r.add(self.channel_nr,-4)
         r.add(self.channel_nr,-4)
         r.add(window_size,-4)
-        r.add(packet_size,-4)
+        r.add(SESSION.MAX_PACKET_SIZE,-4)
         print(r)
         var enc_r = self.bin_packet.create(r ,true)
         return enc_r
@@ -874,7 +896,7 @@ class SESSION
         next_index += 4
         var next_length = SSH_MSG.get_item_length(buf[next_index..])
         var data = SSH_MSG.get_bytes(buf, next_index, next_length)
-        next_index += next_length + 4
+        print("ch_data",channel, next_length, data)
         var t_r = self.type.process(data)
         var r = bytes()
         r .. SSH_MSG.CHANNEL_DATA
@@ -917,9 +939,15 @@ class SESSION
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_EOF
                 print("CHANNEL_EOF")
                 return self.close_channel()
+            elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_CLOSE
+                print("CHANNEL_CLOSE")
+                return self.close_channel()
             else
                 print("unhandled message type", self.bin_packet.payload[0])
             end
+        else
+            self.seq_nr_rx -= 1 # TODO: check
+            return ""
         end
         r .. SSH_MSG.IGNORE
         var enc_r = self.bin_packet.create(r ,true)

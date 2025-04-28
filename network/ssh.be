@@ -174,15 +174,15 @@ class SFTP_FILE
         end
         if pflags&1
            self.file = open(url,"r")
-           print("SFTP: open file for read",url)
+           log("SFTP: open file for read {url}",4)
         end
         if pflags&2
             self.file = open(url,"w")
-            print("SFTP: open file for write",url)
+            log("SFTP: open file for write {log}",4)
         end
         if pflags&4
             self.append_flag = true
-            print("SFTP: open file for append",url)
+            log("SFTP: open file for append {log}",4)
         else
             self.append_flag = false
         end
@@ -191,13 +191,13 @@ class SFTP_FILE
     end
 
     def write(data, offset, id)
-        print("SFTP: write file",data, offset)
+        log("SFTP: write file {data} at position {offset}",3)
         if self.append_flag == false
             self.file.seek(offset)
         end
 
         self.length = data.geti(0,-4)
-        print("SFTP: set length",self.length, data[0..3])
+        log("SFTP: file length {self.length}", 3)
 
         self.id = id
         self.written = size(data) - 4
@@ -229,7 +229,7 @@ class SFTP_FILE
     end
 
     def close()
-        print("SFTP: close file",self.url)
+        log("SFTP: close file {self.url}",3)
         if self.file
             self.file.close()
         end
@@ -255,8 +255,8 @@ class SFTP
         self.session = session
         self.dir = PATH()
         self.readDir()
-        print("SFTP started .. not working yet!!!")
-        print(self.dir_list)
+        log("SFTP started .. very incomplete!",1)
+        log("{self.dir_list}",3)
     end
 
     def readDir()
@@ -294,7 +294,7 @@ class SFTP
         s.add(code,-4)
         s .. bytes(-8) # two empty strings
         s.seti(0,size(s)-4,-4)
-        print("SFTP: status",code,"for id",id)  
+        log("SFTP: status {code} for {id}",4)  
         return s
     end
 
@@ -315,7 +315,6 @@ class SFTP
             r .. SFTP.ATTRS
             r..id
             if !path.isdir(url)
-                print("SFTP: stat for file",url)
                 var f = open(url,"r")
                 fsize = f.size()
                 fdate = path.last_modified(f)
@@ -340,26 +339,25 @@ class SFTP
     def process(d)
         var r = bytes()
         if self.file
-            print("SFTP: file is open",self.file.url, self.file.written, self.file.length, self.file.is_writing)
+            log("SFTP: file is open {self.file.url} {self.file.written} {self.file.length} {self.file.is_writing}",4)
             if self.file.is_writing == true
-                print("SFTP: append",d)
+                log("SFTP: append {d}",3)
                 self.file.append(d)
                 if self.file.is_writing == false
                     return self.status(self.file.id, 0) # SSH_FX_OK
                 end
-                return ""
+                return "" # will resolve later to MSG_IGNORE
             end
         end
         var ptype = d[4] # https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-3
         var id = d[5..8]
-        print("SFTP: type, id, data",ptype,id, d)
+        log("SFTP: type {ptype}, id {id}, data {data}", 3)
         if ptype == SFTP.INIT
             r = bytes('000000050200000003') # no extended data support, ver 3
         elif ptype == SFTP.STAT
             var url = d[13..].asstring()
-            print("SFTP STAT for:",url) 
+            log("SFTP STAT for: {url}",3) 
             r = self.stat_for_url(id,url)
-            print(id,r)
         elif ptype == SFTP.OPEN
             var next_index = 9
             var next_length = SSH_MSG.get_item_length(d[next_index..])
@@ -368,9 +366,8 @@ class SFTP
             var pflags = d.geti(next_index,-4)
             next_index += 4
             var attr = d[next_index..]
-            print("SFTP OPEN:",url,pflags,attr)
+            log("SFTP OPEN: {url} with {pflags} and {attr}",3)
             r = self.open_file(id,url,pflags,attr)
-            print(r,id,url)
         elif ptype == SFTP.WRITE
             var next_index = 9
             var next_length = SSH_MSG.get_item_length(d[next_index..])
@@ -379,7 +376,7 @@ class SFTP
             var offset = d.geti(next_index,-4) # uint64
             next_index += 4
             var data = d[next_index..]
-            print("SFTP WRITE:",url,offset,data)
+            log("SFTP WRITE: {url}",3)
             self.file.write(data,offset, id) # Todo: check success
             if self.file.is_writing == false
                 r = self.status(self.file.id, 0) # SSH_FX_OK
@@ -387,22 +384,22 @@ class SFTP
                 r = ""
             end
         elif ptype == SFTP.CLOSE
-            print("SFTP CLOSE")
+            log("SFTP CLOSE",3)
             r = self.status(id, 0) # SSH_FX_OK
             self.file.close()
             self.file = nil
         elif ptype == SFTP.REALPATH
-            print("SFTP REALPATH")
+            log("SFTP REALPATH",3)
             #ignore for now
             r = self.status(id, 0) # SSH_FX_OK
         elif ptype == SFTP.FSETSTAT
-            print("SFTP FSETSTAT",id)
+            log("SFTP FSETSTAT",3)
             #ignore for now
             self.file.close()
             r = self.status(id, 0) # SSH_FX_OK
         else
-            print("SFTP: unknown packet type", ptype)
-            r = self.status(id,8) #OP_UNSUPPORTED 
+            log("SFTP: unknown packet type {ptype}", 3)
+            r = self.status(id,8) #OP_UNSUPPORTED
         end
         return r
     end

@@ -174,15 +174,15 @@ class SFTP_FILE
         end
         if pflags&1
            self.file = open(url,"r")
-           log("SFTP: open file for read {url}",4)
+           log(f"SFTP: open file for read {url}",4)
         end
         if pflags&2
             self.file = open(url,"w")
-            log("SFTP: open file for write {log}",4)
+            log(f"SFTP: open file for write {log}",4)
         end
         if pflags&4
             self.append_flag = true
-            log("SFTP: open file for append {log}",4)
+            log(f"SFTP: open file for append {log}",4)
         else
             self.append_flag = false
         end
@@ -191,13 +191,13 @@ class SFTP_FILE
     end
 
     def write(data, offset, id)
-        log("SFTP: write file {data} at position {offset}",3)
+        log(f"SFTP: write file {data} at position {offset}",3)
         if self.append_flag == false
             self.file.seek(offset)
         end
 
         self.length = data.geti(0,-4)
-        log("SFTP: file length {self.length}", 3)
+        log(f"SFTP: file length {self.length}", 3)
 
         self.id = id
         self.written = size(data) - 4
@@ -229,7 +229,7 @@ class SFTP_FILE
     end
 
     def close()
-        log("SFTP: close file {self.url}",3)
+        log(f"SFTP: close file {self.url}",3)
         if self.file
             self.file.close()
         end
@@ -256,7 +256,7 @@ class SFTP
         self.dir = PATH()
         self.readDir()
         log("SFTP started .. very incomplete!",1)
-        log("{self.dir_list}",3)
+        log(f"{self.dir_list}",3)
     end
 
     def readDir()
@@ -294,7 +294,7 @@ class SFTP
         s.add(code,-4)
         s .. bytes(-8) # two empty strings
         s.seti(0,size(s)-4,-4)
-        log("SFTP: status {code} for {id}",4)  
+        log(f"SFTP: status {code} for {id}",4)  
         return s
     end
 
@@ -339,9 +339,9 @@ class SFTP
     def process(d)
         var r = bytes()
         if self.file
-            log("SFTP: file is open {self.file.url} {self.file.written} {self.file.length} {self.file.is_writing}",4)
+            log(f"SFTP: file is open {self.file.url} {self.file.written} {self.file.length} {self.file.is_writing}",4)
             if self.file.is_writing == true
-                log("SFTP: append {d}",3)
+                log(f"SFTP: append {d}",3)
                 self.file.append(d)
                 if self.file.is_writing == false
                     return self.status(self.file.id, 0) # SSH_FX_OK
@@ -351,12 +351,12 @@ class SFTP
         end
         var ptype = d[4] # https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-3
         var id = d[5..8]
-        log("SFTP: type {ptype}, id {id}, data {data}", 3)
+        log(f"SFTP: type {ptype}, id {id}, data {d}", 3)
         if ptype == SFTP.INIT
             r = bytes('000000050200000003') # no extended data support, ver 3
         elif ptype == SFTP.STAT
             var url = d[13..].asstring()
-            log("SFTP STAT for: {url}",3) 
+            log(f"SFTP STAT for: {url}",3) 
             r = self.stat_for_url(id,url)
         elif ptype == SFTP.OPEN
             var next_index = 9
@@ -366,7 +366,7 @@ class SFTP
             var pflags = d.geti(next_index,-4)
             next_index += 4
             var attr = d[next_index..]
-            log("SFTP OPEN: {url} with {pflags} and {attr}",3)
+            log(f"SFTP OPEN: {url} with {pflags} and {attr}",3)
             r = self.open_file(id,url,pflags,attr)
         elif ptype == SFTP.WRITE
             var next_index = 9
@@ -376,7 +376,7 @@ class SFTP
             var offset = d.geti(next_index,-4) # uint64
             next_index += 4
             var data = d[next_index..]
-            log("SFTP WRITE: {url}",3)
+            log(f"SFTP WRITE: {url}",3)
             self.file.write(data,offset, id) # Todo: check success
             if self.file.is_writing == false
                 r = self.status(self.file.id, 0) # SSH_FX_OK
@@ -398,7 +398,7 @@ class SFTP
             self.file.close()
             r = self.status(id, 0) # SSH_FX_OK
         else
-            log("SFTP: unknown packet type {ptype}", 3)
+            log(f"SFTP: unknown packet type {ptype}", 2)
             r = self.status(id,8) #OP_UNSUPPORTED
         end
         return r
@@ -416,12 +416,12 @@ class BIN_PACKET
         self.expected_length = self.packet_length + 4
         if encrypted == true
             self.packet_length = self.get_length(buf)
-            print("SSH: new bin_packet with length",self.packet_length)
+            log(f"SSH: new bin_packet with {self.packet_length} bytes",3)
             self.expected_length = self.packet_length + 4 + 16 # mac
             if session == nil print("session is nil") end
         end
         if self.expected_length > 32768
-            print("Unusual high packet length - assume decoding error!!", self.expected_length)
+            log(f"SSH: Unusual high packet length {self.expected_length} - assume decoding error!!",1)
             self.expected_length = size(buf)
             self.packet_length = size(buf) - 20
         end
@@ -451,7 +451,7 @@ class BIN_PACKET
         var given_mac = self.buf[self.packet_length+4..self.packet_length+19]
         var mac = c.poly_run(data,poly_key)
         if mac != given_mac
-            print("MAC MISMATCH!!",mac, given_mac, size(given_mac))
+            log(f"SSH: MAC MISMATCH!! {mac} - {given_mac} ", 1)
         end
     end
 
@@ -479,11 +479,11 @@ class BIN_PACKET
     def append(buf)
         self.buf .. buf
         if size(self.buf) > self.expected_length
-            print("must split TCP packet:",self.expected_length,size(self.buf) - self.expected_length)
+            log(f"must split TCP packet:{self.expected_length} _ {size(self.buf) - self.expected_length} ",4)
             self.session.overrun_buf = self.buf[self.expected_length ..]
         end
         if size(self.buf) >= self.expected_length
-            print("SSH: got complete packet",self.expected_length, size(self.buf))
+            log(f"SSH: got complete packet: {self.expected_length} _ {size(self.buf)}",4)
             self.complete = true
             if self.encrypted == true
                 self.check_packet()
@@ -638,7 +638,7 @@ class HANDSHAKE
     end
 
     def create_ephemeral(payload)
-        log("SSH: will create ephemeral keys",2)
+        log("SSH: create ephemeral keys",3)
         import crypto
         var ephem_key = crypto.random(32)
         self.Q_S = (crypto.EC_C25519().public_key(ephem_key))
@@ -691,7 +691,7 @@ class HANDSHAKE
     end
 
     def send_NEWKEYS()
-        log("SSH: confirm to be ready for new keys",2)
+        log("SSH: send new keys",2)
         var payload = bytes(-1)
         payload[0] = SSH_MSG.NEWKEYS
         self.session.prepare(self.K,self.H)
@@ -723,7 +723,7 @@ class HANDSHAKE
                 elif self.bin_packet.payload[0] == SSH_MSG.DISCONNECT
                     log("SSH: client did disconnect",1)
                 else
-                    print("SSH: unknown packet type", self.bin_packet.payload[0])
+                    log("SSH: unknown packet type: {self.bin_packet.payload[0]}", 1)
                 end
                 self.bin_packet = nil
             end
@@ -731,7 +731,7 @@ class HANDSHAKE
         elif self.state == 2
 
         end
-        log("SSH: unknown packet")
+        log("SSH: unknown packet",1)
         return ""
     end
 end
@@ -753,7 +753,6 @@ class SESSION
     static banner = "  / \\    Secure Wireless Serial Interface\n"
                     "/ /|\\ \\  SSH Terminal Server on %s\n"
                     "  \\_/    Copyright (C) 2025 Tasmota %s\n"
-                    "%s \n"
 
     def init()
         self.up = false
@@ -773,7 +772,7 @@ class SESSION
         if self.strict_mode == false
             strict_mode = "\n\r WARNING: outdated SSH-client, connection is vulnerable to Terrapin!!!\r\n"
         end
-        SSH_MSG.add_string(r,format(self.banner,hw,vs,tasmota.memory().tostring()) + strict_mode)
+        SSH_MSG.add_string(r,format(self.banner,hw,vs) + strict_mode)
         SSH_MSG.add_string(r,"") # language
         var p = BIN_PACKET(bytes(-32),self,false)
         self.overrun_buf = nil
@@ -782,7 +781,7 @@ class SESSION
 
     def handle_service_request()
         var name = SSH_MSG.get_string(self.bin_packet.payload, 1, SSH_MSG.get_item_length(self.bin_packet.payload[1..]))
-        print("service request:",name)
+        log(f"SSH: service request: {name}",2)
         if name == "ssh-userauth"
             var r = bytes(64)
             r .. SSH_MSG.SERVICE_ACCEPT
@@ -793,7 +792,7 @@ class SESSION
         end
         var r = bytes(64)
         r .. SSH_MSG.USERAUTH_SUCCESS
-        print("unhandled request",r)
+        log(f"SSH: unhandled request {r}",1)
         var enc_r = self.bin_packet.create(r ,true)
         return enc_r
     end
@@ -859,14 +858,14 @@ class SESSION
         var window_size = buf.geti(next_index,-4)
         next_index += 4
         var packet_size = buf.geti(next_index,-4)
-        print(channel_type,self.channel_nr,window_size,packet_size)
+        log(f"SSH: type {channel_type}, nr{self.channel_nr}, window size {window_size}, packet size {packet_size}",2)
         var r = bytes(64)
         r .. SSH_MSG.CHANNEL_OPEN_CONFIRMATION
         r.add(self.channel_nr,-4)
         r.add(self.channel_nr,-4)
         r.add(window_size,-4)
         r.add(SESSION.MAX_PACKET_SIZE,-4)
-        print(r)
+        # print(r)
         var enc_r = self.bin_packet.create(r ,true)
         return enc_r
     end
@@ -894,7 +893,7 @@ class SESSION
         next_index += 4
         next_length = SSH_MSG.get_item_length(buf[next_index..])
         var terminal_modes = SSH_MSG.get_string(buf, next_index, next_length)
-        print(channel,req_type_type,want_reply,term,width_c,height_c,width_p,height_p)
+        log(f"{channel},{req_type_type},{want_reply},{term,width_c},{height_c},{width_p},{height_p}",3)
         if req_type_type == "shell"
             self.type = TERMINAL()
         elif req_type_type == "subsystem" && term == "sftp"
@@ -919,7 +918,7 @@ class SESSION
         next_index += 4
         var next_length = SSH_MSG.get_item_length(buf[next_index..])
         var data = SSH_MSG.get_bytes(buf, next_index, next_length)
-        print("ch_data",channel, next_length, data)
+        log(f"SSH: ch {channel} data {next_length} {data}",3)
         var t_r = self.type.process(data)
         if t_r == ""
             # self.seq_nr_rx -= 1 # pending write job or something else
@@ -955,25 +954,25 @@ class SESSION
             if self.bin_packet.payload[0] == SSH_MSG.SERVICE_REQUEST
                 return self.handle_service_request()
             elif self.bin_packet.payload[0] == SSH_MSG.USERAUTH_REQUEST
-                print("USERAUTH_REQUEST")
+                log("USERAUTH_REQUEST")
                 return self.handle_userauth_request()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_OPEN
-                print("CHANNEL_OPEN__REQUEST")
+                log("CHANNEL_OPEN__REQUEST")
                 return self.handle_channel_open()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_REQUEST
-                print("CHANNEL_REQUEST")
+                log("CHANNEL_REQUEST")
                 return self.handle_channel_request()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_DATA
-                print("CHANNEL_DATA")
+                log("CHANNEL_DATA")
                 return self.handle_channel_data()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_EOF
-                print("CHANNEL_EOF")
+                log("CHANNEL_EOF")
                 return self.close_channel()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_CLOSE
-                print("CHANNEL_CLOSE")
+                log("CHANNEL_CLOSE")
                 return self.close_channel()
             else
-                print("unhandled message type", self.bin_packet.payload[0])
+                log(f"SSH: unhandled session message type: {self.bin_packet.payload[0]}", 2)
             end
         else
             self.seq_nr_rx -= 1 # TODO: check
@@ -1008,7 +1007,7 @@ class SESSION
         self.KEY_C_S_header = self.generate_keys(K,H,self.KEY_C_S_main)
         self.KEY_S_C_main = self.generate_keys(K,H,"D",H)
         self.KEY_S_C_header = self.generate_keys(K,H,self.KEY_S_C_main)
-        print("Did create session keys:")
+        log("SSH: session keys created",3)  
         # print(self.KEY_C_S_main, self.KEY_C_S_header, self.KEY_S_C_main, self.KEY_S_C_header)
         self.up = true
         if self.strict_mode == true

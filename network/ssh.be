@@ -243,6 +243,7 @@ class SFTP
     static CLOSE    = 4
     static READ     = 5
     static WRITE    = 6
+    static LSTAT    = 7
     static FSETSTAT = 10
     static REALPATH = 16
     static STAT     = 17
@@ -266,9 +267,9 @@ class SFTP
 
     def attr_for_file(sz, date)
         var attr = bytes("0000000d")  
-        attr.add(0x8180, -4) # permissions 
         attr.add(0, -4)      # high bytes
         attr.add(sz,-4)      # is uint64
+        attr.add(0x8180, -4) # permissions 
         attr.add(date,-4)
         attr.add(date,-4)
         attr.add(0, -4) # extended count (4 bytes) - no extended attributes
@@ -354,6 +355,10 @@ class SFTP
         log(f"SFTP: type {ptype}, id {id}, data {d}", 3)
         if ptype == SFTP.INIT
             r = bytes('000000050200000003') # no extended data support, ver 3
+        elif ptype == SFTP.LSTAT
+            var url = d[13..].asstring()
+            log(f"SFTP LSTAT for: {url}",3) 
+            r = self.stat_for_url(id,url)
         elif ptype == SFTP.STAT
             var url = d[13..].asstring()
             log(f"SFTP STAT for: {url}",3) 
@@ -381,7 +386,7 @@ class SFTP
             if self.file.is_writing == false
                 r = self.status(self.file.id, 0) # SSH_FX_OK
             else
-                r = ""
+                r = "" # -> MSG_IGNORE
             end
         elif ptype == SFTP.CLOSE
             log("SFTP CLOSE",3)
@@ -451,6 +456,7 @@ class BIN_PACKET
         var given_mac = self.buf[self.packet_length+4..self.packet_length+19]
         var mac = c.poly_run(data,poly_key)
         if mac != given_mac
+            #TODO: disconect
             log(f"SSH: MAC MISMATCH!! {mac} - {given_mac} ", 1)
         end
     end
@@ -737,7 +743,7 @@ class HANDSHAKE
 end
 
 class SESSION
-    var up, strict_mode
+    var up, strict_mode, client_pub_key
     var H, K, ID
     var bin_packet
     var KEY_C_S_main, KEY_S_C_main, KEY_C_S_header, KEY_S_C_header
@@ -777,6 +783,27 @@ class SESSION
         var p = BIN_PACKET(bytes(-32),self,false)
         self.overrun_buf = nil
         return p.create(r ,true)
+    end
+
+    def check_pub_key()
+        import persist
+        var r = bytes(32)
+        if persist.known_kosts == nil
+            persist.known_kosts = []
+        end
+        for key:persist.known_kosts
+            if key == self.client_pub_key
+                log("SSH: known client",2)
+                r .. SSH_MSG.USERAUTH_SUCCESS
+                var enc_r = self.bin_packet.create(r ,true)
+                return enc_r
+            end
+        end
+        r .. SSH_MSG.USERAUTH_FAILURE
+        SSH_MSG.add_string(r,"password")
+        r .. 0
+        var enc_r = self.bin_packet.create(r ,true)
+        return enc_r
     end
 
     def handle_service_request()
@@ -819,7 +846,7 @@ class SESSION
         var method_name = SSH_MSG.get_string(buf, next_index, next_length)
         if method_name == "none"
             r .. SSH_MSG.USERAUTH_FAILURE
-            SSH_MSG.add_string(r,"password")
+            SSH_MSG.add_string(r,"publickey,password")
             r .. 0
             var enc_r = self.bin_packet.create(r ,true)
             return enc_r
@@ -840,8 +867,13 @@ class SESSION
         end
         next_index += next_length + 4
         next_length = SSH_MSG.get_item_length(buf[next_index..])
-        var algo_blob = SSH_MSG.get_string(buf, next_index, next_length) #var name is "context sensitive"
-        print(user_name,service_name,method_name,bool_field,key_algo,algo_blob)
+        var algo_blob = SSH_MSG.get_bytes(buf, next_index, next_length) #var name is "context sensitive"
+        if method_name == "publickey"
+            print("SSH: public key auth", key_algo)
+            self.client_pub_key = algo_blob[-32..].tohex()
+            return self.check_pub_key()
+        end
+        print(user_name,service_name,method_name,bool_field,key_algo,size(algo_blob),algo_blob)
         r .. SSH_MSG.USERAUTH_SUCCESS
         var enc_r = self.bin_packet.create(r ,true)
         return enc_r
@@ -906,7 +938,7 @@ class SESSION
             r .. SSH_MSG.IGNORE
         end
         r.add(self.channel_nr,-4)
-        print(r)
+        # print(r)
         var enc_r = self.bin_packet.create(r ,true)
         return enc_r
     end
@@ -1108,6 +1140,27 @@ class SSH : Driver
             end
         end
     end
+
+    def key_save()
+        if self.session
+            if self.session.client_pub_key
+                import persist
+                if persist.known_kosts == nil
+                    persist.known_kosts = []
+                end
+                for key:persist.known_kosts
+                    if key == self.session.client_pub_key
+                        tasmota.resp_cmnd_str("SSH: key already known")
+                        return
+                    end
+                end
+                persist.known_kosts.push(self.session.client_pub_key)
+                tasmota.resp_cmnd_str("SSH: key saved")
+            end
+        end
+    end
 end
 
 var ssh =  SSH()
+
+tasmota.add_cmd("ssh_key_save", /->ssh.key_save())

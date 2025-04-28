@@ -155,7 +155,8 @@ class PATH    # helper class to hold the current directory
 end
 
 class SFTP_FILE
-    var url, file, length, written
+    var url, file, length, written, is_writing, id
+    var append_flag
 
     #define SSH_FXF_READ            0x00000001
     #define SSH_FXF_WRITE           0x00000002
@@ -174,29 +175,44 @@ class SFTP_FILE
         if pflags&1
            self.file = open(url,"r")
            print("SFTP: open file for read",url)
-        elif pflags&2
+        end
+        if pflags&2
             self.file = open(url,"w")
             print("SFTP: open file for write",url)
         end
+        if pflags&4
+            self.append_flag = true
+            print("SFTP: open file for append",url)
+        else
+            self.append_flag = false
+        end
         self.url = url
+        self.is_writing = false
     end
 
-    def write(data, offset)
+    def write(data, offset, id)
         print("SFTP: write file",data, offset)
-        self.file.seek(offset)
-        if self.length == nil
-            self.length = data.geti(0,-2)
-            print("SFTP: set length",self.length)
+        if self.append_flag == false
+            self.file.seek(offset)
         end
-        if self.file
-            self.written = size(data) - 4
-            return self.file.write(data[4..]) # skip length
+
+        self.length = data.geti(0,-4)
+        print("SFTP: set length",self.length, data[0..3])
+
+        self.id = id
+        self.written = size(data) - 4
+        if self.written < self.length
+            self.is_writing = true
         end
+        return self.file.write(data[4..]) # skip length
     end
 
     def append(data)
         if self.file
             self.written += size(data)
+            if self.written == self.length
+                self.is_writing = false
+            end
             return self.file.write(data)
         end
     end
@@ -278,6 +294,7 @@ class SFTP
         s.add(code,-4)
         s .. bytes(-8) # two empty strings
         s.seti(0,size(s)-4,-4)
+        print("SFTP: status",code,"for id",id)  
         return s
     end
 
@@ -323,8 +340,13 @@ class SFTP
     def process(d)
         var r = bytes()
         if self.file
-            if self.file.length && self.file.length > self.file.written
+            print("SFTP: file is open",self.file.url, self.file.written, self.file.length, self.file.is_writing)
+            if self.file.is_writing == true
+                print("SFTP: append",d)
                 self.file.append(d)
+                if self.file.is_writing == false
+                    return self.status(self.file.id, 0) # SSH_FX_OK
+                end
                 return ""
             end
         end
@@ -353,13 +375,17 @@ class SFTP
             var next_index = 9
             var next_length = SSH_MSG.get_item_length(d[next_index..])
             var url = SSH_MSG.get_string(d, next_index, next_length)
-            next_index += next_length + 4
+            next_index += next_length + 8
             var offset = d.geti(next_index,-4) # uint64
-            next_index += 8
+            next_index += 4
             var data = d[next_index..]
             print("SFTP WRITE:",url,offset,data)
-            self.file.write(data,offset) # Todo: check success
-            r = self.status(id, 0) # SSH_FX_OK
+            self.file.write(data,offset, id) # Todo: check success
+            if self.file.is_writing == false
+                r = self.status(self.file.id, 0) # SSH_FX_OK
+            else
+                r = ""
+            end
         elif ptype == SFTP.CLOSE
             print("SFTP CLOSE")
             r = self.status(id, 0) # SSH_FX_OK
@@ -370,7 +396,7 @@ class SFTP
             #ignore for now
             r = self.status(id, 0) # SSH_FX_OK
         elif ptype == SFTP.FSETSTAT
-            print("SFTP FSETSTAT")
+            print("SFTP FSETSTAT",id)
             #ignore for now
             self.file.close()
             r = self.status(id, 0) # SSH_FX_OK
@@ -898,6 +924,13 @@ class SESSION
         var data = SSH_MSG.get_bytes(buf, next_index, next_length)
         print("ch_data",channel, next_length, data)
         var t_r = self.type.process(data)
+        if t_r == ""
+            # self.seq_nr_rx -= 1 # pending write job or something else
+            var r = bytes()
+            r .. SSH_MSG.IGNORE
+            var enc_r = self.bin_packet.create(r ,true)
+            return enc_r
+        end
         var r = bytes()
         r .. SSH_MSG.CHANNEL_DATA
         r.add(self.channel_nr,-4)

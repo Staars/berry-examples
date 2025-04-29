@@ -155,7 +155,7 @@ class PATH    # helper class to hold the current directory
 end
 
 class SFTP_FILE
-    var url, file, length, written, is_writing, id
+    var url, file, length, written, is_writing, is_reading, id
     var append_flag
 
     #define SSH_FXF_READ            0x00000001
@@ -217,7 +217,7 @@ class SFTP_FILE
         end
     end
 
-    def read(len, offset)
+    def read(len, offset, id)
         self.file.seek(offset)
         if len > 4096
             len = 4096
@@ -348,6 +348,12 @@ class SFTP
                     return self.status(self.file.id, 0) # SSH_FX_OK
                 end
                 return "" # will resolve later to MSG_IGNORE
+            elif self.file.is_reading == true
+                log(f"SFTP: read {d}",3)
+                r .. SFTP.DATA
+                if self.file.is_reading == false
+                    return self.status(self.file.id, 0) # SSH_FX_OK
+                end
             end
         end
         var ptype = d[4] # https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-3
@@ -373,6 +379,21 @@ class SFTP
             var attr = d[next_index..]
             log(f"SFTP OPEN: {url} with {pflags} and {attr}",3)
             r = self.open_file(id,url,pflags,attr)
+        elif ptype == SFTP.READ
+            var next_index = 9
+            var next_length = SSH_MSG.get_item_length(d[next_index..])
+            var url = SSH_MSG.get_string(d, next_index, next_length)
+            next_index += next_length + 8
+            var offset = d.geti(next_index,-4) # uint64
+            next_index += 4
+            var len = d[next_index..]
+            log(f"SFTP READ: {url} - {len} bytes from {offset}",3)
+            self.file.read(len,offset, id) # Todo: check success
+            if self.file.is_reading == false
+                r = self.status(self.file.id, 0) # SSH_FX_OK
+            else
+                r = "" # -> MSG_IGNORE
+            end
         elif ptype == SFTP.WRITE
             var next_index = 9
             var next_length = SSH_MSG.get_item_length(d[next_index..])

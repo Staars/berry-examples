@@ -788,10 +788,10 @@ class SESSION
     def check_pub_key()
         import persist
         var r = bytes(32)
-        if persist.known_kosts == nil
-            persist.known_kosts = []
+        if persist.known_hosts == nil
+            persist.known_hosts = []
         end
-        for key:persist.known_kosts
+        for key:persist.known_hosts
             if key == self.client_pub_key
                 log("SSH: known client",2)
                 r .. SSH_MSG.USERAUTH_SUCCESS
@@ -1145,16 +1145,17 @@ class SSH : Driver
         if self.session
             if self.session.client_pub_key
                 import persist
-                if persist.known_kosts == nil
-                    persist.known_kosts = []
+                if persist.known_hosts == nil
+                    persist.known_hosts = []
                 end
-                for key:persist.known_kosts
+                for key:persist.known_hosts
                     if key == self.session.client_pub_key
                         tasmota.resp_cmnd_str("SSH: key already known")
                         return
                     end
                 end
-                persist.known_kosts.push(self.session.client_pub_key)
+                persist.known_hosts.push(self.session.client_pub_key)
+                persist.save(true)
                 tasmota.resp_cmnd_str("SSH: key saved")
             end
         end

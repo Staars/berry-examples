@@ -218,12 +218,17 @@ class SFTP_FILE
     end
 
     def read(len, offset, id)
+        self.is_reading = false
+        self.id = id
         self.file.seek(offset)
         if len > 4096
             len = 4096
         end
         if self.file
-            return self.file.read(size)
+            print(f"SFTP: read {len} bytes")
+            var b = self.file.read(len)
+            print(b,size(b))
+            return b
         end
         return nil
     end
@@ -248,6 +253,7 @@ class SFTP
     static REALPATH = 16
     static STAT     = 17
     static STATUS   = 101
+    static DATA     = 103
     static ATTRS    = 105
 
     var session, dir_list, dir, file
@@ -386,13 +392,17 @@ class SFTP
             next_index += next_length + 8
             var offset = d.geti(next_index,-4) # uint64
             next_index += 4
-            var len = d[next_index..]
+            var len = d.geti(next_index,-4) # uint32
             log(f"SFTP READ: {url} - {len} bytes from {offset}",3)
-            self.file.read(len,offset, id) # Todo: check success
-            if self.file.is_reading == false
-                r = self.status(self.file.id, 0) # SSH_FX_OK
+            var fbytes= self.file.read(len,offset,id)
+            if size(fbytes) == 0
+                r = self.status(id, 1) # FX_EOF  1
             else
-                r = "" # -> MSG_IGNORE
+                r = bytes("00000000") # size
+                r .. SFTP.DATA
+                r .. id
+                SSH_MSG.add_string(r, self.file.read(len,offset,id))
+                r.seti(0,size(r)-4,-4)
             end
         elif ptype == SFTP.WRITE
             var next_index = 9

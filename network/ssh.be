@@ -156,7 +156,7 @@ end
 
 class SFTP_FILE
     var url, file, length, written, is_writing, is_reading, id
-    var append_flag
+    var append_flag, chunk_limit
 
     #define SSH_FXF_READ            0x00000001
     #define SSH_FXF_WRITE           0x00000002
@@ -188,6 +188,7 @@ class SFTP_FILE
         end
         self.url = url
         self.is_writing = false
+        self.chunk_limit = 4096
     end
 
     def write(data, offset, id)
@@ -218,16 +219,12 @@ class SFTP_FILE
     end
 
     def read(len, offset, id)
-        self.is_reading = false
-        self.id = id
         self.file.seek(offset)
-        if len > 4096
-            len = 4096
+        if len > self.chunk_limit # stay below 4096 max packet size in the end
+            len = self.chunk_limit
         end
         if self.file
-            print(f"SFTP: read {len} bytes")
-            var b = self.file.read(len)
-            print(b,size(b))
+            var b = self.file.readbytes(len)
             return b
         end
         return nil
@@ -344,7 +341,10 @@ class SFTP
     end
 
     def process(d)
+        log(f"SFTP: process SFTP __________________________",3)
         var r = bytes()
+        var unfinished = true
+        var ptype, id
         if self.file
             log(f"SFTP: file is open {self.file.url} {self.file.written} {self.file.length} {self.file.is_writing}",4)
             if self.file.is_writing == true
@@ -354,88 +354,102 @@ class SFTP
                     return self.status(self.file.id, 0) # SSH_FX_OK
                 end
                 return "" # will resolve later to MSG_IGNORE
-            elif self.file.is_reading == true
-                log(f"SFTP: read {d}",3)
-                r .. SFTP.DATA
-                if self.file.is_reading == false
-                    return self.status(self.file.id, 0) # SSH_FX_OK
-                end
             end
         end
-        var ptype = d[4] # https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-3
-        var id = d[5..8]
-        log(f"SFTP: type {ptype}, id {id}, data {d}", 3)
-        if ptype == SFTP.INIT
-            r = bytes('000000050200000003') # no extended data support, ver 3
-        elif ptype == SFTP.LSTAT
-            var url = d[13..].asstring()
-            log(f"SFTP LSTAT for: {url}",3) 
-            r = self.stat_for_url(id,url)
-        elif ptype == SFTP.STAT
-            var url = d[13..].asstring()
-            log(f"SFTP STAT for: {url}",3) 
-            r = self.stat_for_url(id,url)
-        elif ptype == SFTP.OPEN
-            var next_index = 9
-            var next_length = SSH_MSG.get_item_length(d[next_index..])
-            var url = SSH_MSG.get_string(d, next_index, next_length)
-            next_index += next_length + 4
-            var pflags = d.geti(next_index,-4)
-            next_index += 4
-            var attr = d[next_index..]
-            log(f"SFTP OPEN: {url} with {pflags} and {attr}",3)
-            r = self.open_file(id,url,pflags,attr)
-        elif ptype == SFTP.READ
-            var next_index = 9
-            var next_length = SSH_MSG.get_item_length(d[next_index..])
-            var url = SSH_MSG.get_string(d, next_index, next_length)
-            next_index += next_length + 8
-            var offset = d.geti(next_index,-4) # uint64
-            next_index += 4
-            var len = d.geti(next_index,-4) # uint32
-            log(f"SFTP READ: {url} - {len} bytes from {offset}",3)
-            var fbytes= self.file.read(len,offset,id)
-            if size(fbytes) == 0
-                r = self.status(id, 1) # FX_EOF  1
-            else
-                r = bytes("00000000") # size
-                r .. SFTP.DATA
-                r .. id
-                SSH_MSG.add_string(r, self.file.read(len,offset,id))
-                r.seti(0,size(r)-4,-4)
+        if self.file
+            var cmds = size(d)/32
+            if cmds == 0
+                cmds = 1
             end
-        elif ptype == SFTP.WRITE
-            var next_index = 9
-            var next_length = SSH_MSG.get_item_length(d[next_index..])
-            var url = SSH_MSG.get_string(d, next_index, next_length)
-            next_index += next_length + 8
-            var offset = d.geti(next_index,-4) # uint64
-            next_index += 4
-            var data = d[next_index..]
-            log(f"SFTP WRITE: {url}",3)
-            self.file.write(data,offset, id) # Todo: check success
-            if self.file.is_writing == false
-                r = self.status(self.file.id, 0) # SSH_FX_OK
+            self.file.chunk_limit = 4096/cmds # read command 32 bytes
+            print("get commands:", cmds, self.file.chunk_limit)
+        end
+        while unfinished == true
+            ptype = d[4] # https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-3
+            id = d[5..8]
+            log(f"SFTP: type {ptype}, id {id}, data {d}", 3)
+            if ptype == SFTP.INIT
+                r = bytes('000000050200000003') # no extended data support, ver 3
+            elif ptype == SFTP.LSTAT
+                var url = d[13..].asstring()
+                log(f"SFTP LSTAT for: {url}",3) 
+                r = self.stat_for_url(id,url)
+            elif ptype == SFTP.STAT
+                var url = d[13..].asstring()
+                log(f"SFTP STAT for: {url}",3) 
+                r = self.stat_for_url(id,url)
+            elif ptype == SFTP.OPEN
+                var next_index = 9
+                var next_length = SSH_MSG.get_item_length(d[next_index..])
+                var url = SSH_MSG.get_string(d, next_index, next_length)
+                next_index += next_length + 4
+                var pflags = d.geti(next_index,-4)
+                next_index += 4
+                var attr = d[next_index..]
+                log(f"SFTP OPEN: {url} with {pflags} and {attr}",3)
+                r = self.open_file(id,url,pflags,attr)
+            elif ptype == SFTP.READ
+                print("__D",d.tohex())
+                var next_index = 9
+                var next_length = SSH_MSG.get_item_length(d[next_index..])
+                var url = SSH_MSG.get_string(d, next_index, next_length)
+                next_index += next_length + 8
+                var offset = d.geti(next_index,-4) # uint64
+                next_index += 4
+                var len = d.geti(next_index,-4) # uint32
+                next_index += 4
+                log(f"SFTP READ: {url} - {len} bytes from {offset}",3)
+                var fbytes = self.file.read(len,offset,id)
+                if size(fbytes) == 0
+                    r = self.status(id, 1) # FX_EOF  1
+                else
+                    var _r = bytes("00000000") # size
+                    _r .. SFTP.DATA
+                    _r .. id
+                    SSH_MSG.add_string(_r, fbytes)
+                    _r.seti(0,size(_r)-4,-4)
+                    r .. _r
+                    print(r, size(r), size(fbytes))
+                end
+                if next_index < size(d) - 9
+                    unfinished = true
+                    d = d[next_index..]
+                    continue
+                end
+            elif ptype == SFTP.WRITE
+                var next_index = 9
+                var next_length = SSH_MSG.get_item_length(d[next_index..])
+                var url = SSH_MSG.get_string(d, next_index, next_length)
+                next_index += next_length + 8
+                var offset = d.geti(next_index,-4) # uint64
+                next_index += 4
+                var data = d[next_index..]
+                log(f"SFTP WRITE: {url}",3)
+                self.file.write(data,offset, id) # Todo: check success
+                if self.file.is_writing == false
+                    r = self.status(self.file.id, 0) # SSH_FX_OK
+                else
+                    r = "" # -> MSG_IGNORE
+                end
+            elif ptype == SFTP.CLOSE
+                log("SFTP CLOSE",3)
+                r = self.status(id, 0) # SSH_FX_OK
+                self.file.close()
+                self.file = nil
+            elif ptype == SFTP.REALPATH
+                log("SFTP REALPATH",3)
+                #ignore for now
+                r = self.status(id, 0) # SSH_FX_OK
+            elif ptype == SFTP.FSETSTAT
+                log("SFTP FSETSTAT",3)
+                #ignore for now
+                self.file.close()
+                r = self.status(id, 0) # SSH_FX_OK
             else
-                r = "" # -> MSG_IGNORE
+                log(f"SFTP: unknown packet type {ptype}", 2)
+                r = self.status(id,8) #OP_UNSUPPORTED
             end
-        elif ptype == SFTP.CLOSE
-            log("SFTP CLOSE",3)
-            r = self.status(id, 0) # SSH_FX_OK
-            self.file.close()
-            self.file = nil
-        elif ptype == SFTP.REALPATH
-            log("SFTP REALPATH",3)
-            #ignore for now
-            r = self.status(id, 0) # SSH_FX_OK
-        elif ptype == SFTP.FSETSTAT
-            log("SFTP FSETSTAT",3)
-            #ignore for now
-            self.file.close()
-            r = self.status(id, 0) # SSH_FX_OK
-        else
-            log(f"SFTP: unknown packet type {ptype}", 2)
-            r = self.status(id,8) #OP_UNSUPPORTED
+        unfinished = false
         end
         return r
     end
@@ -694,7 +708,7 @@ class HANDSHAKE
         var next_length = SSH_MSG.get_item_length(buf[next_index..])
         log(f"kex_algorithms: {SSH_MSG.get_name_list(buf, next_index, next_length)}",3)
         for i:SSH_MSG.get_name_list(buf, next_index, next_length)
-            if string.find(i, "kex-strict-c") self.session.strict_mode = true end
+            if string.find(i, "kex-strict-c") >= 0 self.session.strict_mode = true end
         end
         next_index += next_length + 4
         next_length = SSH_MSG.get_item_length(buf[next_index..])
@@ -797,6 +811,11 @@ class SESSION
         self.seq_nr_tx = -1
         self.send_queue = []
         self.strict_mode = false # support by client
+    end
+
+    def deinit()
+        self.type = nil
+        self.bin_packet = nil
     end
 
     def send_banner()
@@ -1034,6 +1053,9 @@ class SESSION
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_CLOSE
                 log("CHANNEL_CLOSE")
                 return self.close_channel()
+            elif self.bin_packet.payload[0] == SSH_MSG.DISCONNECT
+                log("SSH: client did disconnect",1)
+                return ""
             else
                 log(f"SSH: unhandled session message type: {self.bin_packet.payload[0]}", 2)
             end
@@ -1113,6 +1135,8 @@ class SSH : Driver
             if self.client.connected() == false
                 self.pubClientInfo()
                 self.connection = false
+                self.session = nil
+                self.client = nil
             end
         end
     end
@@ -1129,17 +1153,30 @@ class SSH : Driver
         end
     end
 
+    def send(packet)
+        var written = self.client.write(packet)
+        print("written", written, size(packet))
+        if written == 0
+            log("SSH: send error",1)
+            return
+        end
+        while written < size(packet)
+            log(f"written only {written} of {size(packet)}",1)
+            tasmota.yield()
+            written += self.client.write(packet[written..])
+        end
+        self.session.seq_nr_tx += 1
+    end
+
     def sendResponse(resp)
         var session = self.session
         var bin = session.bin_packet
         session.bin_packet = nil
-        self.client.write(resp)
-        session.seq_nr_tx += 1
+        self.send(resp)
         if size(session.send_queue) != 0
-            self.client.write(session.send_queue.pop()())
-            session.seq_nr_tx += 1
+            self.send(session.send_queue.pop()())
         end
-        log(f"SSH: {self.session.seq_nr_tx} >>> {resp} _ {size(resp)} bytes",2)
+        log(f"SSH: {self.session.seq_nr_tx} >>> {resp} _ {size(resp)} bytes",3)
     end
 
     def handleConnection() # main loop for incoming commands
@@ -1148,6 +1185,7 @@ class SSH : Driver
         if self.session.overrun_buf
             d = self.session.overrun_buf.copy()
             self.session.overrun_buf = nil
+            log(f"SSH: got overrun packet: {size(d)}",3)
         else
             d = self.client.readbytes()
         end
@@ -1155,7 +1193,7 @@ class SSH : Driver
             return 
         end
         self.session.seq_nr_rx += 1
-        log(f"SSH: {self.session.seq_nr_rx} <<< {d} _ {size(d)} bytes",2)
+        log(f"SSH: {self.session.seq_nr_rx} <<< {d} _ {size(d)} bytes",3)
         if self.session.up == true
             response = self.session.process(d)
             if response != ""

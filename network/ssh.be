@@ -1105,13 +1105,14 @@ end
 class SSH : Driver
 
     var connection, server, client
-    var handshake, session
+    var handshake, session, loop
     static port = 22
 
     def init()
         self.server = tcpserver(self.port) # connection for control data
         self.connection = false
         tasmota.add_driver(self)
+        self.loop = /->self.run_loop()
         log(f"SSH: init server on port {self.port}",1)
     end
 
@@ -1147,25 +1148,26 @@ class SSH : Driver
         mqtt.publish("SSH",format("{'server':%s}", payload))
     end
 
-    def loop()
+    def run_loop()
         if self.connection == true
             self.handleConnection()
         end
     end
 
     def send(packet)
-        var written = self.client.write(packet)
-        print("written", written, size(packet))
-        if written == 0
-            log("SSH: send error",1)
-            return
+        if self.client.listening() == false
+            log("SSH: client not listening",1)
+            self.loop = /->self.send(packet)
+            return # back to Tasmota
         end
+        var written = self.client.write(packet)
         while written < size(packet)
-            log(f"written only {written} of {size(packet)}",1)
-            tasmota.yield()
-            written += self.client.write(packet[written..])
+            log(f"SSH: written only {written} of {size(packet)}",1)
+            self.loop = /->self.send(packet[written..])
+            return # back to Tasmota
         end
         self.session.seq_nr_tx += 1
+        self.loop = /->self.run_loop()
     end
 
     def sendResponse(resp)

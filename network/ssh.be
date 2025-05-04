@@ -268,6 +268,35 @@ class SFTP
         log("SFTP started .. very incomplete!",1)
     end
 
+    def fsize(url)
+        import path
+        if path.exists(url) == true && path.isdir(url) == false
+            var f = open(url,"r")
+            var sz = f.size()
+            f.close()
+            return sz
+        end
+        return 0
+    end
+
+    def fdate(url)
+        import path
+        if path.exists(url) == true
+            return path.last_modified(url)
+        end
+        return 0
+    end
+
+    def long_name(url)
+        var date = self.fdate(url)
+        var sz = self.fsize(url)
+        var m = tasmota.strftime("%B", date)[0..2]
+        var dt = tasmota.strftime("%d %H:%M", date)
+        var pre = "-"
+        if sz ==0 pre = "d" end
+        return f"{pre}rwxrwxr-x   1 admin    all      {sz:8i} {m} {dt} {url}"
+    end
+
     def read_dir(url, id)
         if size(self.dir_list) == 0
             return self.status(id, 1) # EOF
@@ -278,7 +307,7 @@ class SFTP
         r.add(size(self.dir_list),-4) # count
         for i:self.dir_list
             SSH_MSG.add_string(r,i)
-            SSH_MSG.add_string(r,f"-rwxr-xr-x   1 admin    all        348911 Mar 25 14:29 {i}") # empty string
+            SSH_MSG.add_string(r,self.long_name(i))
             r .. self.attribs(i) # file attributes
         end
         r.seti(0,size(r)-4,-4)

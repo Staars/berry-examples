@@ -247,10 +247,13 @@ class SFTP
     static WRITE    = 6
     static LSTAT    = 7
     static FSETSTAT = 10
+    static OPENDIR  = 11
+    static READDIR  = 12
     static REALPATH = 16
     static STAT     = 17
     static STATUS   = 101
     static DATA     = 103
+    static NAME     = 104
     static ATTRS    = 105
 
     var session, dir_list, dir, file
@@ -258,38 +261,52 @@ class SFTP
     def init(session)
         self.session = session
         self.dir = PATH()
-        self.readDir()
         log("SFTP started .. very incomplete!",1)
         log(f"{self.dir_list}",3)
     end
 
-    def readDir()
+    def read_dir(url, id)
+        print("SFTP: read dir",url,id)
         import path
+        self.dir.set(url)
         self.dir_list = path.listdir(self.dir.get_url())
+        print(self.dir_list, size(self.dir_list))   
+        var r = bytes("00000000") # size
+        r .. SFTP.NAME
+        r .. id
+        r.add(size(self.dir_list),-4) # count
+        for i:self.dir_list
+            SSH_MSG.add_string(r,i)
+            SSH_MSG.add_string(r,bytes("00000000")) # empty string
+            r .. self.attribs(i) # file attributes
+        end
+        r.seti(0,size(r)-4,-4)
+        return r
     end
 
-    def attr_for_file(sz, date)
-        var attr = bytes("0000000d")  
-        attr.add(0, -4)      # high bytes
-        attr.add(sz,-4)      # is uint64
-        attr.add(0x8180, -4) # permissions 
-        attr.add(date,-4)
-        attr.add(date,-4)
-        attr.add(0, -4) # extended count (4 bytes) - no extended attributes
-        return attr
-    end
-
-    def attr_for_dir(date)
-        var attr = bytes(32)
-        var flags = 0x0000000C  # permissions + acmodtime flags
-        attr.add(flags, -4)  # add flags
-        var perms = 0x41ED    # drwxr-xr-x (0755) - directory permissions!!
-        attr.add(perms, -4)   # add permissions
-        attr.add(date, -4)    # atime (4 bytes) - access time
-        attr.add(date, -4)    # mtime (4 bytes) - modification time  
-        attr.add(0, -4)      # extended count (4 bytes) - no extended attributes
-        
-        return attr
+    def attribs(url)
+        import path
+        var date = 0
+        var sz = 0
+        var a = bytes("0000000d") # flags
+        if path.isdir(url)
+            a.add(0, -4)      # high bytes
+            a.add(sz,-4)      # is uint64
+            a.add(0x41ED, -4) # permissions 
+        else
+            var f = open(url,"r")
+            sz = f.size()
+            date = path.last_modified(f)
+            f.close()
+            a.add(0, -4)      # high bytes
+            a.add(sz,-4)      # is uint64
+            a.add(0x8180, -4) # permissions 
+        end
+        a.add(date,-4)
+        a.add(date,-4)
+        a.add(0, -4) # extended count (4 bytes) - no extended attributes
+        print(a,size(a))
+        return a
     end
 
     def status(id,code)
@@ -318,14 +335,8 @@ class SFTP
             var r = bytes("00000000") # size
             r .. SFTP.ATTRS
             r..id
-            if !path.isdir(url)
-                var f = open(url,"r")
-                fsize = f.size()
-                fdate = path.last_modified(f)
-                f.close()
-                r.. self.attr_for_file(fsize,fdate)
-            end
-            r .. self.attr_for_dir(fdate) # dir , no idea if correct way \\ 
+            r .. self.attribs(url) # file attributes
+            r .. self.attribs(url) # WHY TWICE??????
             r.seti(0,size(r)-4,-4)
             return r
         end
@@ -389,7 +400,6 @@ class SFTP
                 log(f"SFTP OPEN: {url} with {pflags} and {attr}",3)
                 r = self.open_file(id,url,pflags,attr)
             elif ptype == SFTP.READ
-                print("__D",d.tohex())
                 var next_index = 9
                 var next_length = SSH_MSG.get_item_length(d[next_index..])
                 var url = SSH_MSG.get_string(d, next_index, next_length)
@@ -431,6 +441,21 @@ class SFTP
                 else
                     r = "" # -> MSG_IGNORE
                 end
+            elif ptype == SFTP.OPENDIR
+                var url = d[13..].asstring()
+                if url == ""
+                    url = "/"
+                end
+                log(f"SFTP OPENDIR: {url}",3)
+                if self.dir.set(url)
+                    r = self.handle(id,url)
+                else
+                    r = self.status(id, 2) # NO_SUCH_FILE
+                end
+            elif ptype == SFTP.READDIR
+                var url = d[13..].asstring()
+                log(f"SFTP READDIR: {url}",3)
+                r = self.read_dir(url,id)
             elif ptype == SFTP.CLOSE
                 log("SFTP CLOSE",3)
                 r = self.status(id, 0) # SSH_FX_OK
@@ -1112,7 +1137,6 @@ class SSH : Driver
         self.server = tcpserver(self.port) # connection for control data
         self.connection = false
         tasmota.add_driver(self)
-        self.loop = /->self.run_loop()
         log(f"SSH: init server on port {self.port}",1)
     end
 
@@ -1123,6 +1147,7 @@ class SSH : Driver
             self.client = self.server.acceptasync()
             self.session = SESSION()
             self.handshake = HANDSHAKE(self.session)
+            self.loop = /->self.run_loop()
             self.connection = true
             self.pubClientInfo()
         else

@@ -408,7 +408,7 @@ class SFTP
                 cmds = 1
             end
             self.file.chunk_limit = 4096/cmds # read command 32 bytes
-            print("get commands:", cmds, self.file.chunk_limit)
+            log(f"SSH: multiple commands: {cmds}",3)
         end
         while unfinished == true
             ptype = d[4] # https://datatracker.ietf.org/doc/html/draft-ietf-secsh-filexfer-02#section-3
@@ -454,7 +454,6 @@ class SFTP
                     SSH_MSG.add_string(_r, fbytes)
                     _r.seti(0,size(_r)-4,-4)
                     r .. _r
-                    print(r, size(r), size(fbytes))
                 end
                 if next_index < size(d) - 9
                     unfinished = true
@@ -532,7 +531,6 @@ class BIN_PACKET
             self.packet_length = self.get_length(buf)
             log(f"SSH: new bin_packet with {self.packet_length} bytes",3)
             self.expected_length = self.packet_length + 4 + 16 # mac
-            if session == nil print("session is nil") end
         end
         if self.expected_length > 32768
             log(f"SSH: Unusual high packet length {self.expected_length} - assume decoding error!!",1)
@@ -738,7 +736,7 @@ class HANDSHAKE
 
         var eddsa25519 = crypto.ED25519()
         var SIG = eddsa25519.sign(self.H,self.host_key)
-        print(SIG)
+        # print(SIG)
 
         var payload = bytes(256)
         payload .. SSH_MSG.KEX_ECDH_REPLY
@@ -983,11 +981,11 @@ class SESSION
         next_length = SSH_MSG.get_item_length(buf[next_index..])
         var algo_blob = SSH_MSG.get_bytes(buf, next_index, next_length) #var name is "context sensitive"
         if method_name == "publickey"
-            print("SSH: public key auth", key_algo)
+            log(f"SSH: public key auth: {key_algo}",2)
             self.client_pub_key = algo_blob[-32..].tohex()
             return self.check_pub_key()
         end
-        print(user_name,service_name,method_name,bool_field,key_algo,size(algo_blob),algo_blob)
+        # print(user_name,service_name,method_name,bool_field,key_algo,size(algo_blob),algo_blob)
         r .. SSH_MSG.USERAUTH_SUCCESS
         var enc_r = self.bin_packet.create(r ,true)
         return enc_r
@@ -1100,22 +1098,22 @@ class SESSION
             if self.bin_packet.payload[0] == SSH_MSG.SERVICE_REQUEST
                 return self.handle_service_request()
             elif self.bin_packet.payload[0] == SSH_MSG.USERAUTH_REQUEST
-                log("USERAUTH_REQUEST")
+                log("USERAUTH_REQUEST",3)
                 return self.handle_userauth_request()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_OPEN
-                log("CHANNEL_OPEN__REQUEST")
+                log("CHANNEL_OPEN__REQUEST",3)
                 return self.handle_channel_open()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_REQUEST
-                log("CHANNEL_REQUEST")
+                log("CHANNEL_REQUEST",3)
                 return self.handle_channel_request()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_DATA
-                log("CHANNEL_DATA")
+                log("CHANNEL_DATA",3)
                 return self.handle_channel_data()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_EOF
-                log("CHANNEL_EOF")
+                log("CHANNEL_EOF",3)
                 return self.close_channel()
             elif self.bin_packet.payload[0] == SSH_MSG.CHANNEL_CLOSE
-                log("CHANNEL_CLOSE")
+                log("CHANNEL_CLOSE",3)
                 return self.close_channel()
             elif self.bin_packet.payload[0] == SSH_MSG.DISCONNECT
                 log("SSH: client did disconnect",1)
@@ -1220,7 +1218,7 @@ class SSH : Driver
 
     def send(packet)
         if self.client.listening() == false
-            log("SSH: client not listening",1)
+            log("SSH: client not listening",3)
             self.loop = /->self.send(packet)
             return # back to Tasmota
         end

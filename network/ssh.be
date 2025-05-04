@@ -293,7 +293,7 @@ class SFTP
         var m = tasmota.strftime("%B", date)[0..2]
         var dt = tasmota.strftime("%d %H:%M", date)
         var pre = "-"
-        if sz ==0 pre = "d" end
+        if sz ==0 pre = "d" end # TODO: really check if dir
         return f"{pre}rwxrwxr-x   1 admin    all      {sz:8i} {m} {dt} {url}"
     end
 
@@ -317,31 +317,21 @@ class SFTP
 
     def attribs(url)
         import path
-        var date = 0
-        var sz = 0
+        var date = self.fdate(url)
+        var sz = self.fsize(url)
         var perms = 777
         var a = bytes("0800000f") # flags for extended size|uid|perm|time
         a.add(0, -4)      # high bytes of size
+        a.add(sz,-4)      # is uint64
+        a.add(0,-4)      # uid - superuser
+        a.add(0,-4)      # gid - superuser
         if path.isdir(url)
-            a.add(sz,-4)      # is uint64
-            a.add(0,-4)      # uid - superuser
-            a.add(0,-4)      # gid - superuser
             a.add(perms|40000, -4) # permissions for dir
         else
-            var f = open(url,"r")
-            sz = f.size()
-            date = path.last_modified(f)
-            f.close()
-            a.add(sz,-4)      # is uint64
-            a.add(0,-4)      # uid - superuser
-            a.add(0,-4)      # gid - superuser
             a.add(perms|100000, -4) # permissions for file
         end
         a.add(date,-4)
         a.add(date,-4)
-        a.add(0, -4) # extended count (4 bytes) - no extended attributes
-        a.add(0, -4) # not sure what this is
-        # a.add(0, -4) # no extended_data
         return a
     end
 
@@ -365,8 +355,6 @@ class SFTP
 
     def stat_for_url(id, url)
         import path
-        var fsize = -1
-        var fdate = 0
         if path.exists(url)
             var r = bytes("00000000") # size
             r .. SFTP.ATTRS

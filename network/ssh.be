@@ -191,6 +191,10 @@ class SFTP_FILE
         self.chunk_limit = 4096
     end
 
+    def deinit()
+        self.close()
+    end
+
     def write(data, offset, id)
         log(f"SFTP: write file {data} at position {offset}",3)
         if self.append_flag == false
@@ -262,25 +266,23 @@ class SFTP
         self.session = session
         self.dir = PATH()
         log("SFTP started .. very incomplete!",1)
-        log(f"{self.dir_list}",3)
     end
 
     def read_dir(url, id)
-        print("SFTP: read dir",url,id)
-        import path
-        self.dir.set(url)
-        self.dir_list = path.listdir(self.dir.get_url())
-        print(self.dir_list, size(self.dir_list))   
+        if size(self.dir_list) == 0
+            return self.status(id, 1) # EOF
+        end
         var r = bytes("00000000") # size
         r .. SFTP.NAME
         r .. id
         r.add(size(self.dir_list),-4) # count
         for i:self.dir_list
             SSH_MSG.add_string(r,i)
-            SSH_MSG.add_string(r,bytes("00000000")) # empty string
+            SSH_MSG.add_string(r,f"-rwxr-xr-x   1 admin    all        348911 Mar 25 14:29 {i}") # empty string
             r .. self.attribs(i) # file attributes
         end
         r.seti(0,size(r)-4,-4)
+        self.dir_list = []
         return r
     end
 
@@ -288,24 +290,29 @@ class SFTP
         import path
         var date = 0
         var sz = 0
-        var a = bytes("0000000d") # flags
+        var perms = 777
+        var a = bytes("0800000f") # flags for extended size|uid|perm|time
+        a.add(0, -4)      # high bytes of size
         if path.isdir(url)
-            a.add(0, -4)      # high bytes
             a.add(sz,-4)      # is uint64
-            a.add(0x41ED, -4) # permissions 
+            a.add(0,-4)      # uid - superuser
+            a.add(0,-4)      # gid - superuser
+            a.add(perms|40000, -4) # permissions for dir
         else
             var f = open(url,"r")
             sz = f.size()
             date = path.last_modified(f)
             f.close()
-            a.add(0, -4)      # high bytes
             a.add(sz,-4)      # is uint64
-            a.add(0x8180, -4) # permissions 
+            a.add(0,-4)      # uid - superuser
+            a.add(0,-4)      # gid - superuser
+            a.add(perms|100000, -4) # permissions for file
         end
         a.add(date,-4)
         a.add(date,-4)
         a.add(0, -4) # extended count (4 bytes) - no extended attributes
-        print(a,size(a))
+        a.add(0, -4) # not sure what this is
+        # a.add(0, -4) # no extended_data
         return a
     end
 
@@ -336,7 +343,6 @@ class SFTP
             r .. SFTP.ATTRS
             r..id
             r .. self.attribs(url) # file attributes
-            r .. self.attribs(url) # WHY TWICE??????
             r.seti(0,size(r)-4,-4)
             return r
         end
@@ -349,6 +355,18 @@ class SFTP
             return self.handle(id,url)
         end
         return self.status(id, 2) # NO_SUCH_FILE
+    end
+
+    def path_name(url,id)
+        var r = bytes("00000000") # size
+        r .. SFTP.NAME
+        r .. id
+        r.add(1,-4) # count
+        SSH_MSG.add_string(r,url)
+        SSH_MSG.add_string(r,"")
+        r .. self.attribs(url) # file attributes
+        r.seti(0,size(r)-4,-4)
+        return r
     end
 
     def process(d)
@@ -448,6 +466,8 @@ class SFTP
                 end
                 log(f"SFTP OPENDIR: {url}",3)
                 if self.dir.set(url)
+                    import path
+                    self.dir_list = path.listdir(self.dir.get_url())
                     r = self.handle(id,url)
                 else
                     r = self.status(id, 2) # NO_SUCH_FILE
@@ -459,12 +479,14 @@ class SFTP
             elif ptype == SFTP.CLOSE
                 log("SFTP CLOSE",3)
                 r = self.status(id, 0) # SSH_FX_OK
-                self.file.close()
                 self.file = nil
             elif ptype == SFTP.REALPATH
                 log("SFTP REALPATH",3)
-                #ignore for now
-                r = self.status(id, 0) # SSH_FX_OK
+                var url = d[13..].asstring()
+                if url == "."
+                    url = "/"
+                end 
+                r = self.path_name(url,id)
             elif ptype == SFTP.FSETSTAT
                 log("SFTP FSETSTAT",3)
                 #ignore for now

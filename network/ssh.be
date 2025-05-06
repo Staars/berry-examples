@@ -1,5 +1,12 @@
 #- Simple SSH server in Berry by Christian Baars
+#  includes rudimentary terminal and SFTP server
 #  this is demo code and not intended for production use
+#  written from scratch, no libraries used
+#  DO NOT OPEN A GH ISSUE, but feel free to use GH discussions
+#  needs some crypto primitives:
+        #define USE_BERRY_CRYPTO_EC_C25519
+        #define USE_BERRY_CRYPTO_CHACHA_POLY
+        #define USE_BERRY_CRYPTO_ED25519
 -#
 
 class SSH_MSG

@@ -186,11 +186,11 @@ class SFTP_FILE
         end
         if pflags&2
             self.file = open(url,"w")
-            log(f"SFTP: open file for write {log}",4)
+            log(f"SFTP: open file for write {url}",4)
         end
         if pflags&4
             self.append_flag = true
-            log(f"SFTP: open file for append {log}",4)
+            log(f"SFTP: open file for append {url}",4)
         else
             self.append_flag = false
         end
@@ -299,12 +299,13 @@ class SFTP
     end
 
     def long_name(url)
+        import path
         var date = self.fdate(url)
         var sz = self.fsize(url)
         var m = tasmota.strftime("%B", date)[0..2]
         var dt = tasmota.strftime("%d %H:%M", date)
         var pre = "-"
-        if sz ==0 pre = "d" end # TODO: really check if dir
+        if path.isdir(url) pre = "d" end
         return f"{pre}rwxrwxr-x   1 admin    all      {sz:8i} {m} {dt} {url}"
     end
 

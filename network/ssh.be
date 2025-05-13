@@ -264,8 +264,12 @@ class SFTP
     static FSETSTAT = 10
     static OPENDIR  = 11
     static READDIR  = 12
+    static REMOVE   = 13
+    static MKDIR    = 14
+    static RMDIR    = 15
     static REALPATH = 16
     static STAT     = 17
+    static RENAME   = 18
     static STATUS   = 101
     static DATA     = 103
     static NAME     = 104
@@ -347,11 +351,16 @@ class SFTP
         return a
     end
 
-    def status(id,code)
+    def status(id,code, msg)
         var s = bytes("0000000065") # packet type SSH_FXP_STATUS 101
         s .. id
         s.add(code,-4)
-        s .. bytes(-8) # two empty strings
+        if msg
+            SSH_MSG.add_string(s,msg)
+        else
+            s .. bytes(-4)
+        end
+        s .. bytes(-4) # no language string
         s.seti(0,size(s)-4,-4)
         log(f"SFTP: status {code} for {id}",4)  
         return s
@@ -396,6 +405,39 @@ class SFTP
         r .. self.attribs(url) # file attributes
         r.seti(0,size(r)-4,-4)
         return r
+    end
+
+    def mkdir(url,id)
+        import path
+        if path.exists() == true
+            return self.status(id, 4) # FAILURE
+        end
+        if path.mkdir(url) == true
+            return self.status(id, 0) # SSH_FX_OK
+        end
+        return self.status(id, 4) # FAILURE
+    end
+
+    def rmdir(url,id)
+        import path
+        if path.exists(url) == false
+            return self.status(id, 2) # NO_SUCH_FILE
+        end
+        if path.rmdir(url) == true
+            return self.status(id, 0) # SSH_FX_OK
+        end
+        return self.status(id, 4, "folder empty??") # FAILURE
+    end
+
+    def remove_file(url,id)
+        import path
+        if path.exists(url) == false
+            return self.status(id, 2) # NO_SUCH_FILE
+        end
+        if path.remove(url) == true
+            return self.status(id, 0) # SSH_FX_OK
+        end
+        return self.status(id, 4, "unknown error") # FAILURE
     end
 
     def process(d)
@@ -446,6 +488,10 @@ class SFTP
                 var attr = d[next_index..]
                 log(f"SFTP OPEN: {url} with {pflags} and {attr}",3)
                 r = self.open_file(id,url,pflags,attr)
+            elif ptype == SFTP.REMOVE
+                var url = d[13..].asstring()
+                log(f"SFTP REMOVE file: {url}",3) 
+                r = self.remove_file(url, id)
             elif ptype == SFTP.READ
                 var next_index = 9
                 var next_length = SSH_MSG.get_item_length(d[next_index..])
@@ -504,6 +550,15 @@ class SFTP
                 var url = d[13..].asstring()
                 log(f"SFTP READDIR: {url}",3)
                 r = self.read_dir(url,id)
+            elif ptype == SFTP.MKDIR
+                var next_index = 9
+                var next_length = SSH_MSG.get_item_length(d[next_index..])
+                var url = SSH_MSG.get_string(d, next_index, next_length)
+                # next item would be attribs, but we can not handle it anyway
+                return self.mkdir(url, id)
+            elif ptype == SFTP.RMDIR
+                var url = d[13..].asstring()
+                return self.rmdir(url, id)
             elif ptype == SFTP.CLOSE
                 log("SFTP CLOSE",3)
                 r = self.status(id, 0) # SSH_FX_OK

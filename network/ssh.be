@@ -440,6 +440,17 @@ class SFTP
         return self.status(id, 4, "unknown error") # FAILURE
     end
 
+    def rename(old_url, new_url, id)
+        import path
+        if path.exists(old_url) == false
+            return self.status(id, 2) # NO_SUCH_FILE
+        end
+        if path.rename(old_url, new_url) == true
+            return self.status(id, 0) # SSH_FX_OK
+        end
+        return self.status(id, 4, "unknown error") # FAILURE
+    end
+
     def process(d)
         log(f"SFTP: process SFTP __________________________",3)
         var r = bytes()
@@ -559,6 +570,15 @@ class SFTP
             elif ptype == SFTP.RMDIR
                 var url = d[13..].asstring()
                 return self.rmdir(url, id)
+            elif ptype == SFTP.RENAME
+                var next_index = 9
+                var next_length = SSH_MSG.get_item_length(d[next_index..])
+                var old_url = SSH_MSG.get_string(d, next_index, next_length)
+                next_index += next_length + 4
+                next_length = SSH_MSG.get_item_length(d[next_index..])
+                var new_url = SSH_MSG.get_string(d, next_index, next_length)
+                log(f"SFTP RENAME {old_url} to {new_url}",3)
+                return self.rename(old_url, new_url, id)
             elif ptype == SFTP.CLOSE
                 log("SFTP CLOSE",3)
                 r = self.status(id, 0) # SSH_FX_OK

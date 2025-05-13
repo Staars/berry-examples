@@ -181,7 +181,8 @@ class SFTP_FILE
         end
         if pflags&1
            self.file = open(url,"r")
-           log(f"SFTP: open file for read {url}",4)
+           self.length = self.file.size()
+           log(f"SFTP: open file for read {url} with length: {self.length}",4)
         end
         if pflags&2
             self.file = open(url,"w")
@@ -230,6 +231,9 @@ class SFTP_FILE
     end
 
     def read(len, offset, id)
+        if offset > self.length
+            return bytes()
+        end
         self.file.seek(offset)
         if len > self.chunk_limit # stay below 4096 max packet size in the end
             len = self.chunk_limit

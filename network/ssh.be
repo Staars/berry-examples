@@ -984,6 +984,16 @@ class SESSION
         return p.create(r ,true)
     end
 
+    def first_prompt()
+        var r = bytes()
+        r .. SSH_MSG.CHANNEL_DATA
+        r.add(self.channel_nr,-4)
+        SSH_MSG.add_string(r,"\r\n> ")
+        var p = BIN_PACKET(bytes(-32),self,false)
+        self.overrun_buf = nil
+        return p.create(r ,true)
+    end
+
     def check_pub_key()
         import persist
         var r = bytes(32)
@@ -1127,6 +1137,7 @@ class SESSION
         log(f"{channel},{req_type_type},{want_reply},{term,width_c},{height_c},{width_p},{height_p}",3)
         if req_type_type == "shell"
             self.type = TERMINAL()
+            self.send_queue.push(/->self.first_prompt())
         elif req_type_type == "subsystem" && term == "sftp"
             self.type = SFTP()
         end

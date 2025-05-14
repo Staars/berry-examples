@@ -137,7 +137,7 @@ class PATH    # helper class to hold the current directory
         var new = string.split(p,"/")
         self.p = []
         for c:new
-            if c != ""
+            if c != "" && c != "."
                 self.p.push(c)
             end
         end
@@ -321,10 +321,11 @@ class SFTP
         r .. SFTP.NAME
         r .. id
         r.add(size(self.dir_list),-4) # count
+        var dir_url = self.dir.get_url()
         for i:self.dir_list
             SSH_MSG.add_string(r,i)
-            SSH_MSG.add_string(r,self.long_name(i))
-            r .. self.attribs(i) # file attributes
+            SSH_MSG.add_string(r,self.long_name(dir_url + i))
+            r .. self.attribs(dir_url + i) # file attributes
         end
         r.seti(0,size(r)-4,-4)
         self.dir_list = []

@@ -336,16 +336,16 @@ class SFTP
         import path
         var date = self.fdate(url)
         var sz = self.fsize(url)
-        var perms = 777
+        var perms = 509 #  775 as octal 
         var a = bytes("0800000f") # flags for extended size|uid|perm|time
         a.add(0, -4)      # high bytes of size
         a.add(sz,-4)      # is uint64
         a.add(0,-4)      # uid - superuser
         a.add(0,-4)      # gid - superuser
         if path.isdir(url)
-            a.add(perms|40000, -4) # permissions for dir
+            a.add(perms|16384, -4) # permissions for dir _ 40000 as octal
         else
-            a.add(perms|100000, -4) # permissions for file
+            a.add(perms|32768, -4) # permissions for file _ 100000 as octal
         end
         a.add(date,-4)
         a.add(date,-4)

@@ -572,10 +572,16 @@ class LD2 : Driver
         #  FD FC FB FA 1C 00 61 01 00 00 AA 08 08 08 32 32 28 1E 14 0F 0F 0F 0F 00 00 28 28 1E 1E 14 14 14 05 00 04 03 02 01 - Default
         var cmd = self.buf[6]
         var ack = self.buf[7] == 1
+
+        if ack != true
+            log("LD2: Sensor NACK !!!", 2)
+            return
+        end
+
         if cmd == self.CMND_READ_PARAMETERS
-            print("LD2: moving_distance_gate",self.buf[12],"static_distance_gate",self.buf[13],"no one duration",self.buf.get(32,-2))
+            print("LD2: moving_distance_gate", self.buf[12], "static_distance_gate", self.buf[13], "no one duration", self.buf.get(32, -2))
             for i:0..self.sensor.MAX_GATES
-                print("LD2: moving sens",i, self.buf[14+i], "static sens",i, self.buf[23+i])
+                print("LD2: moving sens", i, self.buf[14 + i], "static sens", i, self.buf[23 + i])
             end
         elif cmd == self.CMND_START_CONFIGURATION || cmd == self.CMND_END_CONFIGURATION
             # do nothing
@@ -584,22 +590,16 @@ class LD2 : Driver
         elif cmd == self.CMND_GET_FIRMWARE
             self.parseFW()
         elif cmd == self.CMND_GET_MAC
-            if ack
-                self.MAC = self.buf[10..15].tohex()
-                log(f"LD2: has MAC {self.MAC}")
-            else
-                log("LD2: did not get MAC")
-            end
+            self.MAC = self.buf[10..15].tohex()
+            log(f"LD2: has MAC {self.MAC}")
         else
             print(self.buf)
         end
-        if ack == true
-            log("LD2: Sensor ACK",3)
-            self.next_cmnd()
-        else
-            log("LD2: Sensor NACK !!!",2)
-        end
+
+        log("LD2: Sensor ACK", 3)
+        self.next_cmnd()
     end
+
 
     def handle_read()
         if self.buf[0] == 0xfd

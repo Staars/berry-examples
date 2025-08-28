@@ -1,5 +1,5 @@
 #- LF24xx.be - HLK-LD24 family 24GHz smart wave motion sensor support
-#   Refactor: introduce LD24xxBase and subclass LD2410/LD2412/LD2420
+#   Refactor: introduce LD24xxBase and subclass  LD2402/LD2410/LD2412/LD2420
 #   SPDX-FileCopyrightText: 2024 Christian Baars
 #   SPDX-License-Identifier: GPL-3.0-only
 -#
@@ -103,6 +103,24 @@ class LD24xxBase
         tasmota.response_append(msg)
     end
 end
+
+class LD2402 : LD24xxBase
+    def init(major, minor, patch)
+        super(self).init()
+        self.model_name = "LD2402"
+        self.fw_version = [major, minor, patch]
+        self.MAX_GATES = 8
+        self.OFF_MOV_DIST = 9
+        self.OFF_MOV_EN   = 11
+        self.OFF_STAT_DIST = 12
+        self.OFF_STAT_EN   = 14
+        self.OFF_MOV_GATES = 17
+        self.OFF_STAT_GATES = 25
+        self.GATE_SIZE = 1
+        self.HAS_LIGHT = false
+    end
+end
+
 
 class LD2410 : LD24xxBase
     def init(major, minor, patch)
@@ -260,6 +278,8 @@ class LD2 : Driver
             self.sensor = LD2412(major, minor, patch)
         elif sensor_type == 2420
             self.sensor = LD2420(self, major, minor, patch)
+        elif sensor_type == 2402
+            self.sensor = LD2402(major, minor, patch)
         else
             log("LD2: ERROR - unknown sensor!!")
             return
@@ -478,6 +498,8 @@ class LD2 : Driver
 
         if ftype == 256
             self.init_sensor(2410, major, minor, patch)
+        elif ftype == 0x2402
+            self.init_sensor(2402, major, minor, patch)
         elif ftype == 0x2412
             self.init_sensor(2412, major, minor, patch)
         elif ftype == 0x2420

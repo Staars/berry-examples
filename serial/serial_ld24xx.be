@@ -97,7 +97,7 @@ class LD24xxBase
         end
         var engin_msg = ""
         if self.mode == 1
-            engin_msg = f",\"moving_energies\":{self.mov_gate_energies}\"static_energies\":{self.stat_gate_energies}"
+            engin_msg = f",\"moving_energies\":{self.mov_gate_energies},\"static_energies\":{self.stat_gate_energies}"
         end
         var msg = f",\"{self.model_name}\":{{\"distance\":[{self.moving_distance},{self.static_distance}],\"energy\":[{self.moving_energy},{self.static_energy}]}}{engin_msg}"
         tasmota.response_append(msg)
@@ -139,6 +139,7 @@ class LD2412 : LD24xxBase
     end
 end
 
+
 class LD2420 : LD24xxBase
     var presence, range
 
@@ -167,6 +168,9 @@ class LD2420 : LD24xxBase
                 self.mov_gate_energies.push(buf.get(self.OFF_MOV_GATES + i * self.GATE_SIZE, self.GATE_SIZE))
                 i += 1
             end
+        else
+            # fall back to base parsing if not type 0x23
+            super(self).handleTRG(buf)
         end
     end
 
@@ -178,8 +182,12 @@ class LD2420 : LD24xxBase
         if self.mode == 0
             msg = f"{{s}}{self.model_name} range{{m}}{self.range} cm{{e}}"
         elif self.mode == 2
-            msg = f"{{s}}{self.model_name} presence{{m}}{self.presence}{{e}}"
-                  "{{s}}{self.model_name} range{{m}}{self.range} cm{{e}}"
+            msg = f"{{s}}{self.model_name} presence{{m}}{self.presence}{{e}}" ..
+                  f"{{s}}{self.model_name} range{{m}}{self.range} cm{{e}}"
+        else
+            # let base handle other modes
+            super(self).show_web()
+            return
         end
         tasmota.web_send_decimal(msg)
     end
@@ -188,15 +196,18 @@ class LD2420 : LD24xxBase
         if self.mode == nil
             return nil
         end
-        var msg
+        # always include the base JSON block first
+        super(self).show_json()
+
+        # then append LD2420‑specific extras
         if self.mode == 0
-            msg = f",\"{self.model_name}\":{{\"range\":{self.range}}}"
+            tasmota.response_append(f",\"range\":{self.range}")
         elif self.mode == 2
-            msg = f",\"{self.model_name}\":{{\"presence\":{self.presence},\"range\":{self.range},\"gates\":{self.mov_gate_energies}}}"
+            tasmota.response_append(f",\"presence\":{self.presence},\"range\":{self.range},\"gates\":{self.mov_gate_energies}")
         end
-        tasmota.response_append(msg)
     end
 end
+
 
 class LD2 : Driver
     var buf
@@ -362,28 +373,31 @@ class LD2 : Driver
 
     # driver loop and helper functions
     def clean_buffer()
-        # clean by shifting everything after a valid footer to the left
-        var i = 0
         var cap = size(self.buf)
-        while i < cap
-            if self.buf[i] != 0x04 && self.buf[i] != 0xf8
-                i += 1
-                continue
-            end
-            if cap > i + 3
-                if self.buf[i .. i + 3] == self.config_footer || self.buf[i .. i + 3] == self.target_footer
-                    self.buf = self.buf[i + 4 ..]
-                    return
-                end
-            end
-            i += 1
+        if cap < 4
+            return  # nothing to do
         end
-        if i == cap
-            # garbage or fully intact
+
+        var idx = 0
+        while idx <= cap - 4
+            var window = self.buf[idx .. idx + 3]
+            if window == self.config_footer || window == self.target_footer
+                # drop everything including this footer
+                self.buf = self.buf[idx + 4 ..]
+                cap = size(self.buf)
+                idx = 0
+                continue  # check again in case there are more packets queued
+            end
+            idx += 1
+        end
+
+        # if we scanned the whole buffer without finding a footer, 
+        # and it's just garbage, clear it
+        if idx > cap - 4
             self.buf.clear()
-        else
         end
     end
+
 
     def next_cmnd()
         if size(self.cmnd_chain) > 0
@@ -421,16 +435,33 @@ class LD2 : Driver
     end
 
     def parseVersion()
-        # FD FC FB FA 0D 00 00 01 00 00 07 00 76 31 2E 34 2E 31 34 04 03 02 01
-        # header |len |ty|hd|ack |length|string |trailer
-        var s = self.buf[13 .. 12 + self.buf[10]].asstring()
+        # Example: FD FC FB FA 0D 00 00 01 00 00 07 00 76 31 2E 34 2E 31 34 04 03 02 01
+        # header |len |ty|hd|ack | length |   string   | trailer
+
+        var str_len = self.buf[10]
+        # ensure payload length fits in buffer
+        if size(self.buf) < 13 + str_len
+            log(f"LD2: parseVersion — buffer too short ({size(self.buf)} bytes for {str_len}‑byte string)")
+            return
+        end
+
+        var s = self.buf[13 .. 12 + str_len].asstring()
         import string
         var fw = string.split(s, ".")
+        if size(fw) < 3
+            log(f"LD2: parseVersion — unexpected version string '{s}'")
+            return
+        end
+
         var major = int(fw[0])
         var minor = int(fw[1])
         var patch = int(fw[2])
+
+        log(f"LD2: Version string '{s}' parsed as {major}.{minor}.{patch}")
+
+        # Only initialise LD2420 here if nothing else has yet
         if self.sensor == nil
-            self.init_sensor(2420, major, minor, patch)  # sensors that did not respond to getFW()
+            self.init_sensor(2420, major, minor, patch)  # intended as LD2420 fallback
         end
     end
 
@@ -544,8 +575,8 @@ class LD2 : Driver
         import string
         var pl = string.split(payload, ",")
         var i = 0
-        for s:pl
-            self.moving_sensitivity[i] = int(s)  # TODO error check
+        while i < size(pl)
+            self.moving_sensitivity[i] = int(pl[i])
             i += 1
         end
         self.sensitivity_counter = self.sensor.MAX_GATES
@@ -558,8 +589,8 @@ class LD2 : Driver
         import string
         var pl = string.split(payload, ",")
         var i = 0
-        for s:pl
-            self.static_sensitivity[i] = int(s)  # TODO error check
+        while i < size(pl)
+            self.static_sensitivity[i] = int(pl[i])  # TODO error check
             i += 1
         end
         self.sensitivity_counter = self.sensor.MAX_GATES

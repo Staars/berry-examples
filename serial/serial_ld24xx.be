@@ -1,5 +1,5 @@
 #- LF24xx.be - HLK-LD24 family 24GHz smart wave motion sensor support
-#   Refactor: introduce LD24xxBase and subclass  LD2401/LD2402/LD2410/LD2411/LD2412/LD2420
+#   Refactor: introduce LD24xxBase and subclass  LD2401/LD2402/LD2410/LD2411/LD2412/LD2420/LD2451
 #   SPDX-FileCopyrightText: 2024 Christian Baars
 #   SPDX-License-Identifier: GPL-3.0-only
 -#
@@ -260,6 +260,81 @@ class LD2420 : LD24xxBase
     end
 end
 
+# HLK-LD2451 vehicle radar tracker
+class LD2451
+    var model_name, fw_version
+    var targets   # list of parsed targets from last frame
+    var mode      # optional, if protocol defines modes
+
+    def init(major, minor, patch)
+        self.model_name = "LD2451"
+        self.fw_version = [major, minor, patch]
+        self.targets = []
+    end
+
+    def handleTRG(buf)
+        # buf is the raw payload after header/length/type
+        self.targets.clear()
+
+        if size(buf) < 4
+            return
+        end
+
+        var target_count = buf[0]
+        var alarm_info   = buf[1]  # could be stored if needed
+
+        var offset = 2
+        var block_size = 5  # angle, distance, dir, speed, snr (1 byte each)
+
+        var i = 0
+        while i < target_count && offset + block_size <= size(buf)
+            var angle_raw = buf[offset]
+            var angle = angle_raw - 128  # datasheet: 0x80 = 0°, signed offset
+            var distance = buf[offset + 1]  # meters
+            var dir_flag = buf[offset + 2]
+            var direction = (dir_flag == 1) ? "approach" : "away"
+            var speed = buf[offset + 3]     # km/h
+            var snr   = buf[offset + 4]     # 0–255 signal-noise-ratio
+
+            self.targets.push({
+                "angle": angle,
+                "distance": distance,
+                "direction": direction,
+                "speed": speed,
+                "snr": snr
+            })
+
+            offset += block_size
+            i += 1
+        end
+    end
+
+    def show_web()
+        if size(self.targets) == 0
+            var msg = f"{{s}}{self.model_name} {{m}}no targets{{e}}"
+            tasmota.web_send_decimal(msg)
+            return nil
+        end
+        var msg = ""
+        var idx = 1
+        for t:self.targets
+        msg += f"{{s}}{self.model_name} target {idx} angle{{m}}{t['angle']}°{{e}}"
+                "{{s}}distance{{m}}{t['distance']} m{{e}}"
+                "{{s}}direction{{m}}{t['direction']}{{e}}"
+                "{{s}}speed{{m}}{t['speed']} km/h{{e}}"
+                "{{s}}SNR{{m}}{t['snr']}{{e}}"
+        idx += 1
+        end
+        tasmota.web_send_decimal(msg)
+    end
+
+    def show_json()
+        if size(self.targets) == 0
+            return nil
+        end
+        tasmota.response_append(f",\"{self.model_name}\":{self.targets}")
+    end
+end
 
 class LD2 : Driver
     var buf, no_read, scfg
@@ -308,7 +383,11 @@ class LD2 : Driver
     end
 
     def init_sensor(sensor_type, major, minor, patch)
-        if sensor_type == 2410
+        if sensor_type == 2401
+            self.sensor = LD2401(major, minor, patch)
+        elif sensor_type == 2402
+            self.sensor = LD2402(major, minor, patch)
+        elif sensor_type == 2410
             self.sensor = LD2410(major, minor, patch)
         elif sensor_type == 2411
             self.sensor = LD2411(major, minor, patch)
@@ -316,16 +395,15 @@ class LD2 : Driver
             self.sensor = LD2412(major, minor, patch)
         elif sensor_type == 2420
             self.sensor = LD2420(self, major, minor, patch)
-        elif sensor_type == 2401
-            self.sensor = LD2401(major, minor, patch)
-        elif sensor_type == 2402
-            self.sensor = LD2402(major, minor, patch)
+        elif sensor_type == 2451
+            self.sensor = LD2451(major, minor, patch)
         else
             log("LD2: ERROR - unknown sensor!!")
             return
         end
         log(f"LD2: found {self.sensor.model_name}")
     end
+
 
     # common commands for the LD24xx family
     def sendCMD(cmd, val)
@@ -548,6 +626,8 @@ class LD2 : Driver
             self.init_sensor(2412, major, minor, patch)
         elif ftype == 0x2420
             self.init_sensor(2420, major, minor, patch)
+        elif ftype == 0x2451
+            self.init_sensor(2451, major, minor, patch)
         else
             log(f"LD2: Unknown FW type: {ftype}")
             log(self.buf)

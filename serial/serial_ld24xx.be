@@ -1,5 +1,5 @@
 #- LF24xx.be - HLK-LD24 family 24GHz smart wave motion sensor support
-#   Refactor: introduce LD24xxBase and subclass  LD2402/LD2410/LD2412/LD2420
+#   Refactor: introduce LD24xxBase and subclass  LD2401/LD2402/LD2410/LD2412/LD2420
 #   SPDX-FileCopyrightText: 2024 Christian Baars
 #   SPDX-License-Identifier: GPL-3.0-only
 -#
@@ -104,6 +104,23 @@ class LD24xxBase
     end
 end
 
+class LD2401 : LD24xxBase
+    def init(major, minor, patch)
+        super(self).init()
+        self.model_name = "LD2401"
+        self.fw_version = [major, minor, patch]
+        self.MAX_GATES = 6
+        self.OFF_MOV_DIST = 9
+        self.OFF_MOV_EN   = 11
+        self.OFF_STAT_DIST = 12
+        self.OFF_STAT_EN   = 14
+        self.OFF_MOV_GATES = 17
+        self.OFF_STAT_GATES = 23
+        self.GATE_SIZE = 1
+        self.HAS_LIGHT = false
+    end
+end
+
 class LD2402 : LD24xxBase
     def init(major, minor, patch)
         super(self).init()
@@ -136,6 +153,23 @@ class LD2410 : LD24xxBase
         self.GATE_SIZE = 1
         self.HAS_LIGHT = false
         super(self).init()
+    end
+end
+
+class LD2411 : LD24xxBase
+    def init(major, minor, patch)
+        super(self).init()
+        self.model_name = "LD2411"
+        self.fw_version = [major, minor, patch]
+        self.MAX_GATES = 6
+        self.OFF_MOV_DIST = 9
+        self.OFF_MOV_EN   = 11
+        self.OFF_STAT_DIST = 12
+        self.OFF_STAT_EN   = 14
+        self.OFF_MOV_GATES = 17
+        self.OFF_STAT_GATES = 23
+        self.GATE_SIZE = 1
+        self.HAS_LIGHT = false
     end
 end
 
@@ -200,8 +234,8 @@ class LD2420 : LD24xxBase
         if self.mode == 0
             msg = f"{{s}}{self.model_name} range{{m}}{self.range} cm{{e}}"
         elif self.mode == 2
-            msg = f"{{s}}{self.model_name} presence{{m}}{self.presence}{{e}}" ..
-                  f"{{s}}{self.model_name} range{{m}}{self.range} cm{{e}}"
+            msg = f"{{s}}{self.model_name} presence{{m}}{self.presence}{{e}}"
+                   "{{s}}{self.model_name} range{{m}}{self.range} cm{{e}}"
         else
             # let base handle other modes
             super(self).show_web()
@@ -274,10 +308,14 @@ class LD2 : Driver
     def init_sensor(sensor_type, major, minor, patch)
         if sensor_type == 2410
             self.sensor = LD2410(major, minor, patch)
+        elif sensor_type == 2411
+            self.sensor = LD2411(major, minor, patch)
         elif sensor_type == 2412
             self.sensor = LD2412(major, minor, patch)
         elif sensor_type == 2420
             self.sensor = LD2420(self, major, minor, patch)
+        elif sensor_type == 2401
+            self.sensor = LD2401(major, minor, patch)
         elif sensor_type == 2402
             self.sensor = LD2402(major, minor, patch)
         else
@@ -498,8 +536,12 @@ class LD2 : Driver
 
         if ftype == 256
             self.init_sensor(2410, major, minor, patch)
+        elif ftype == 0x2401
+            self.init_sensor(2401, major, minor, patch)
         elif ftype == 0x2402
             self.init_sensor(2402, major, minor, patch)
+        elif ftype == 0x2411
+            self.init_sensor(2411, major, minor, patch)
         elif ftype == 0x2412
             self.init_sensor(2412, major, minor, patch)
         elif ftype == 0x2420

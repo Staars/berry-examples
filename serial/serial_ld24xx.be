@@ -1,5 +1,5 @@
 #- LF24xx.be - HLK-LD24 family 24GHz smart wave motion sensor support
-#   Refactor: introduce LD24xxBase and subclass  LD2401/LD2402/LD2410/LD2412/LD2420
+#   Refactor: introduce LD24xxBase and subclass  LD2401/LD2402/LD2410/LD2411/LD2412/LD2420
 #   SPDX-FileCopyrightText: 2024 Christian Baars
 #   SPDX-License-Identifier: GPL-3.0-only
 -#
@@ -262,7 +262,7 @@ end
 
 
 class LD2 : Driver
-    var buf
+    var buf, no_read, scfg
     var ser, sensor, MAC
     var cmnd_chain, timeout
 
@@ -295,6 +295,8 @@ class LD2 : Driver
         log("LD2: start LD24xx driver")
         self.ser = serial(rx, tx, baud)
         self.buf = bytes(64)
+        self.no_read = 0
+        self.scfg = [rx, tx, baud]
         self.ser.read()  # read to /dev/null
         self.cmnd_chain = [
             /->self.getFW(),
@@ -605,6 +607,17 @@ class LD2 : Driver
             end
         else
             print(self.buf)
+            self.no_read += 1
+            print(f"LD2: No Read {self.no_read}")
+            if self.no_read > 10
+                self.ser.close()
+                self.buf.clear()
+                self.ser = serial(self.scfg[0], self.scfg[1], 256000)
+                tasmota.defer(/->self.setCfgMode(true))
+                self.no_read = 0
+                log("LD2: try to reinit serial to 256000 baud")
+                return
+            end
             self.buf = self.buf[1 ..]
         end
     end
@@ -692,7 +705,7 @@ class LD2 : Driver
     end
 end
 
-var ld2 = LD2(15, 16, 115200) # or 256000 baud
+var ld2 = LD2(15, 16, 115200) # or 256000 baud, but auto-fallback will happen
 tasmota.add_driver(ld2)
 tasmota.add_cmd('LD2Duration',   /c,i,p,j->ld2.cmndDuration(c, i, p, j))
 tasmota.add_cmd('LD2MovingSens', /c,i,p,j->ld2.cmndMovingSens(c, i, p, j))

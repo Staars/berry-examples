@@ -115,9 +115,17 @@ class EQ3BTSmart : Driver
     
     # Query device status
     def queryStatus()
-        var cmd = bytes(-1)
-        cmd[0] = self.PROP_INFO_QUERY
+        # Include current time in status query to sync thermostat clock
+        var now = tasmota.time_dump(tasmota.rtc()['local'])
+        var cmd = bytes(-6)
+        cmd[0] = self.PROP_INFO_QUERY  # 0x03
+        cmd[1] = now['year'] % 100     # Year (last 2 digits)
+        cmd[2] = now['month']          # Month (1-12)
+        cmd[3] = now['day']            # Day (1-31)
+        cmd[4] = now['hour']           # Hour (0-23)
+        cmd[5] = now['min']            # Minute (0-59)
         self.writeCommand(cmd)
+        tasmota.log(f"EQ3: Query status with time sync: {now['year']}-{now['month']:02d}-{now['day']:02d} {now['hour']:02d}:{now['min']:02d}", 3)
         self.then(/->self.wait())
     end
     

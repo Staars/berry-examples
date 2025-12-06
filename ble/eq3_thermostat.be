@@ -274,7 +274,7 @@ class EQ3BTSmart : Driver
         log("EQ3: Set to CLOSE (4.5°C)", 2)
     end
 
-    # Parse status notification (0x02)
+    # Parse status notification (0x02) - Full 15 byte format
     def parseStatus()
         if self.buf[0] < 6
             log(f"EQ3: Status data too short: {self.buf[0]} bytes", 2)
@@ -296,83 +296,106 @@ class EQ3BTSmart : Driver
             return
         end
         
-        # Parse status byte (index 3): XY format
-        # X = lock status (high nibble): 0=unlocked, 1=window, 2=manual, 3=both
-        # Y = mode (low nibble): 8=auto, 9=manual, A=holiday, C/D/E=boost variants
-        var status_byte = self.buf[3]
-        self.lock_status = (status_byte >> 4) & 0x0F
-        var mode_nibble = status_byte & 0x0F
+        # Parse mode byte (index 3) - BITMASK format
+        # Bit 0 (0x01): Manual mode (0=auto, 1=manual)
+        # Bit 1 (0x02): Vacation mode
+        # Bit 2 (0x04): Boost mode
+        # Bit 3 (0x08): DST active
+        # Bit 4 (0x10): Window open detected
+        # Bit 5 (0x20): Locked
+        # Bit 6 (0x40): Unknown
+        # Bit 7 (0x80): Low battery
+        var mode_byte = self.buf[3]
+        var is_manual = (mode_byte & 0x01) != 0
+        var is_vacation = (mode_byte & 0x02) != 0
+        var is_boost = (mode_byte & 0x04) != 0
+        var dst_active = (mode_byte & 0x08) != 0
+        self.window_open = (mode_byte & 0x10) != 0
+        var is_locked = (mode_byte & 0x20) != 0
+        self.low_battery = (mode_byte & 0x80) != 0
         
-        # Decode mode
-        if mode_nibble == 0x08
-            self.mode = self.MODE_AUTO
-        elif mode_nibble == 0x09
-            self.mode = self.MODE_MANUAL
-        elif mode_nibble == 0x0A
-            self.mode = self.MODE_HOLIDAY
-        elif mode_nibble == 0x0C || mode_nibble == 0x0D || mode_nibble == 0x0E
+        # Determine primary mode
+        if is_boost
             self.mode = self.MODE_BOOST
+        elif is_vacation
+            self.mode = self.MODE_HOLIDAY
+        elif is_manual
+            self.mode = self.MODE_MANUAL
         else
-            self.mode = -1
-            log(f"EQ3: Unknown mode nibble: 0x{mode_nibble:X}", 2)
+            self.mode = self.MODE_AUTO
         end
         
         # Parse valve position (index 4) - percentage (0-100)
         self.valve_position = self.buf[4]
         
-        # Index 5 is undefined/unknown (possibly battery level or other info)
+        # Index 5 should be 0x04
         var byte5 = self.buf[5]
-        log(f"EQ3: Byte 5 (unknown/battery?): 0x{byte5:02X} ({byte5})", 3)
+        if byte5 != 0x04
+            log(f"EQ3: Warning - Byte 5 expected 0x04, got 0x{byte5:02X}", 2)
+        end
         
         # Parse target temperature (index 6) - half degrees
         self.target_temperature = self.buf[6] / 2.0
         
-        # If holiday mode and notification is 10 bytes, parse end date/time
-        var holiday_info = ""
-        if self.mode == self.MODE_HOLIDAY && self.buf[0] >= 10
-            var end_day = self.buf[7]
-            var end_year = self.buf[8] + 2000
-            var end_hour_min = self.buf[9]
-            var end_month = self.buf[10]
-            var end_hour = end_hour_min / 2
-            var end_min = (end_hour_min % 2) * 30
-            holiday_info = f", until {end_day}/{end_month}/{end_year} {end_hour}:{end_min:02d}"
+        # Parse vacation data (bytes 7-10) if vacation mode active
+        var vacation_info = ""
+        if is_vacation && self.buf[0] >= 10
+            var vac_day = self.buf[7]
+            var vac_year = self.buf[8] + 2000
+            var vac_time_encoded = self.buf[9]
+            var vac_month = self.buf[10]
+            var vac_hour = vac_time_encoded / 2
+            var vac_min = (vac_time_encoded % 2) * 30
+            vacation_info = f" until {vac_day}/{vac_month}/{vac_year} {vac_hour}:{vac_min:02d}"
         end
         
-        # Determine lock status string
-        var lock_str = "unlocked"
-        if self.lock_status == self.LOCK_WINDOW
-            lock_str = "window"
-        elif self.lock_status == self.LOCK_MANUAL
-            lock_str = "manual"
-        elif self.lock_status == self.LOCK_BOTH
-            lock_str = "both"
+        # Parse extended data (bytes 11-15) if available
+        if self.buf[0] >= 15
+            var window_temp = self.buf[11] / 2.0
+            var window_interval = self.buf[12] * 5  # in minutes
+            self.comfort_temp = self.buf[13] / 2.0
+            self.eco_temp = self.buf[14] / 2.0
+            self.temp_offset = (self.buf[15] - 7) / 2.0
+            
+            log(f"EQ3: Window={window_temp}°C/{window_interval}min, Comfort={self.comfort_temp}°C, Eco={self.eco_temp}°C, Offset={self.temp_offset}°C", 3)
         end
         
-        # Determine mode string
-        var mode_str = "unknown"
-        if self.mode == self.MODE_AUTO
-            mode_str = "auto"
-        elif self.mode == self.MODE_MANUAL
-            mode_str = "manual"
-        elif self.mode == self.MODE_HOLIDAY
-            mode_str = "holiday"
-        elif self.mode == self.MODE_BOOST
-            mode_str = "boost"
+        # Build mode string
+        var mode_parts = []
+        if is_manual
+            mode_parts.push("manual")
+        else
+            mode_parts.push("auto")
+        end
+        if is_vacation mode_parts.push("vacation") end
+        if is_boost mode_parts.push("boost") end
+        if self.window_open mode_parts.push("window") end
+        if dst_active mode_parts.push("dst") end
+        
+        var mode_str = mode_parts[0]
+        for i:1..size(mode_parts)-1
+            mode_str = mode_str .. "+" .. mode_parts[i]
         end
         
         import json
         var status_json = {
             "EQ3": {
+                "MAC": self.mac_address,
                 "Mode": mode_str,
                 "TargetTemp": self.target_temperature,
                 "Valve": self.valve_position,
-                "Lock": lock_str,
-                "StatusByte": f"0x{status_byte:02X}",
-                "UnknownByte5": f"0x{byte5:02X}"
+                "Locked": is_locked,
+                "LowBattery": self.low_battery
             }
         }
-        log(f"EQ3: {json.dump(status_json)}{holiday_info}", 2)
+        
+        if self.buf[0] >= 15
+            status_json["EQ3"]["ComfortTemp"] = self.comfort_temp
+            status_json["EQ3"]["EcoTemp"] = self.eco_temp
+            status_json["EQ3"]["TempOffset"] = self.temp_offset
+        end
+        
+        log(f"EQ3: {json.dump(status_json)}{vacation_info}", 2)
         
         # Disconnect after receiving status
         self.disconnect()
@@ -565,9 +588,10 @@ class EQ3BTSmart : Driver
         if self.target_temperature == nil return nil end
         import string
         var msg = string.format(
+                 "{s}EQ3 MAC{m}%s{e}"..
                  "{s}EQ3 Target Temp{m}%.1f °C{e}"..
                  "{s}EQ3 Valve{m}%d %%{e}",
-                 self.target_temperature, self.valve_position)
+                 self.mac_address, self.target_temperature, self.valve_position)
         
         if self.mode != nil && self.mode >= 0
             var mode_str = "Unknown"
@@ -579,10 +603,24 @@ class EQ3BTSmart : Driver
             msg = msg .. string.format("{s}EQ3 Mode{m}%s{e}", mode_str)
         end
         
-        if self.lock_status != self.LOCK_UNLOCKED
-            var lock_str = self.lock_status == self.LOCK_WINDOW ? "Window" : "Manual"
-            if self.lock_status == self.LOCK_BOTH lock_str = "Both" end
-            msg = msg .. string.format("{s}EQ3 Lock{m}%s{e}", lock_str)
+        if self.comfort_temp != nil
+            msg = msg .. string.format("{s}EQ3 Comfort{m}%.1f °C{e}", self.comfort_temp)
+        end
+        
+        if self.eco_temp != nil
+            msg = msg .. string.format("{s}EQ3 Eco{m}%.1f °C{e}", self.eco_temp)
+        end
+        
+        if self.temp_offset != nil
+            msg = msg .. string.format("{s}EQ3 Offset{m}%.1f °C{e}", self.temp_offset)
+        end
+        
+        if self.window_open
+            msg = msg .. "{s}EQ3 Window{m}OPEN{e}"
+        end
+        
+        if self.low_battery
+            msg = msg .. "{s}EQ3 Battery{m}LOW{e}"
         end
         
         tasmota.web_send_decimal(msg)
@@ -595,6 +633,7 @@ class EQ3BTSmart : Driver
         import json
         
         var data = {
+            "MAC": self.mac_address,
             "TargetTemp": self.target_temperature,
             "Valve": self.valve_position
         }
@@ -604,9 +643,24 @@ class EQ3BTSmart : Driver
             data['Mode'] = mode_str
         end
         
-        if self.lock_status != self.LOCK_UNLOCKED
-            var lock_str = ["Unlocked", "Window", "Manual", "Both"][self.lock_status]
-            data['Lock'] = lock_str
+        if self.comfort_temp != nil
+            data['ComfortTemp'] = self.comfort_temp
+        end
+        
+        if self.eco_temp != nil
+            data['EcoTemp'] = self.eco_temp
+        end
+        
+        if self.temp_offset != nil
+            data['TempOffset'] = self.temp_offset
+        end
+        
+        if self.window_open != nil
+            data['WindowOpen'] = self.window_open
+        end
+        
+        if self.low_battery != nil
+            data['LowBattery'] = self.low_battery
         end
         
         var msg = string.format(",\"EQ3\":%s", json.dump(data))

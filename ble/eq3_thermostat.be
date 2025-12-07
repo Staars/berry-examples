@@ -4,12 +4,18 @@
   SPDX-License-Identifier: GPL-3.0-only
 -#
 
+
+
 class EQ3BTSmart : Driver
     var buf
     var current_func, next_func
     var mac_address, pin, is_subscribed
     var is_connected
-    
+    var pending_widget, unsent_widget
+    var last_widget_update
+    var widget_update_interval
+
+
     # Service UUID (vendor specific)
     static SERVICE = "3e135142-654f-9090-134a-a6ff5bb77046"
     
@@ -64,6 +70,7 @@ class EQ3BTSmart : Driver
     var comfort_temp
     var eco_temp
     var temp_offset
+    var vacation_until
     
     def init(MAC, pin)
         import BLE
@@ -76,6 +83,10 @@ class EQ3BTSmart : Driver
         self.mode = -1
         self.lock_status = 0
         self.is_subscribed = false
+        self.pending_widget = nil
+        self.last_widget_update = 0
+        self.widget_update_interval = 20000  # 20 seconds in milliseconds
+        self.vacation_until = nil
         
         BLE.conn_cb(cbp, self.buf)
         BLE.set_MAC(bytes(MAC), 0, pin)
@@ -83,6 +94,8 @@ class EQ3BTSmart : Driver
         
         log(f"EQ3: Initialized for MAC: {MAC}", 2)
     end
+
+
 
     def connect(next_action)
         import BLE
@@ -109,7 +122,6 @@ class EQ3BTSmart : Driver
         import BLE
         log("EQ3: Disconnecting...", 3)
         BLE.run(5)  # Disconnect
-        self.is_connected = false
         self.then(/->self.wait())
     end
 
@@ -274,6 +286,8 @@ class EQ3BTSmart : Driver
         log("EQ3: Set to CLOSE (4.5°C)", 2)
     end
 
+
+
     # Parse status notification (0x02) - Full 15 byte format
     def parseStatus()
         if self.buf[0] < 6
@@ -309,10 +323,13 @@ class EQ3BTSmart : Driver
         var is_manual = (mode_byte & 0x01) != 0
         var is_vacation = (mode_byte & 0x02) != 0
         var is_boost = (mode_byte & 0x04) != 0
-        var dst_active = (mode_byte & 0x08) != 0
+        self.dst_active = (mode_byte & 0x08) != 0
         self.window_open = (mode_byte & 0x10) != 0
         var is_locked = (mode_byte & 0x20) != 0
         self.low_battery = (mode_byte & 0x80) != 0
+        
+        # Store lock status
+        self.lock_status = is_locked ? self.LOCK_MANUAL : self.LOCK_UNLOCKED
         
         # Determine primary mode
         if is_boost
@@ -338,7 +355,7 @@ class EQ3BTSmart : Driver
         self.target_temperature = self.buf[6] / 2.0
         
         # Parse vacation data (bytes 7-10) if vacation mode active
-        var vacation_info = ""
+        self.vacation_until = nil
         if is_vacation && self.buf[0] >= 10
             var vac_day = self.buf[7]
             var vac_year = self.buf[8] + 2000
@@ -346,7 +363,7 @@ class EQ3BTSmart : Driver
             var vac_month = self.buf[10]
             var vac_hour = vac_time_encoded / 2
             var vac_min = (vac_time_encoded % 2) * 30
-            vacation_info = f" until {vac_day}/{vac_month}/{vac_year} {vac_hour}:{vac_min:02d}"
+            self.vacation_until = format("%02d/%02d/%d %02d:%02d", vac_day, vac_month, vac_year, vac_hour, vac_min)
         end
         
         # Parse extended data (bytes 11-15) if available
@@ -370,7 +387,6 @@ class EQ3BTSmart : Driver
         if is_vacation mode_parts.push("vacation") end
         if is_boost mode_parts.push("boost") end
         if self.window_open mode_parts.push("window") end
-        if dst_active mode_parts.push("dst") end
         
         var mode_str = mode_parts[0]
         for i:1..size(mode_parts)-1
@@ -385,7 +401,8 @@ class EQ3BTSmart : Driver
                 "TargetTemp": self.target_temperature,
                 "Valve": self.valve_position,
                 "Locked": is_locked,
-                "LowBattery": self.low_battery
+                "LowBattery": self.low_battery,
+                "DST": self.dst_active
             }
         }
         
@@ -395,25 +412,53 @@ class EQ3BTSmart : Driver
             status_json["EQ3"]["TempOffset"] = self.temp_offset
         end
         
-        log(f"EQ3: {json.dump(status_json)}{vacation_info}", 2)
+        if self.vacation_until != nil
+            status_json["EQ3"]["VacationUntil"] = self.vacation_until
+        end
+        
+        log(f"EQ3: {json.dump(status_json)}", 2)
         
         # Disconnect after receiving status
         self.disconnect()
+        self.update_widget()
     end
+
+
 
     # Promise-like async handling
     def wait()
         # Placeholder - do nothing
     end
 
+
+
     def then(func)
         self.next_func = func
         self.current_func = self.wait
     end
 
+
+
     def every_100ms()
         self.current_func()
+        
+        import MI32
+        # If we have a widget and data, update every 20 seconds or on demand
+        if self.pending_widget != nil && self.target_temperature != nil
+            var now = tasmota.millis()
+            # Only update if 20 seconds elapsed
+            if now - self.last_widget_update >= self.widget_update_interval
+                if self.unsent_widget == true
+                    self.update_widget()
+                else 
+                    MI32.widget(self.pending_widget)
+                    self.last_widget_update = now
+                end
+            end
+        end
     end
+
+
 
     # BLE callback handler
     def cb(error, op, uuid, handle)
@@ -470,6 +515,131 @@ class EQ3BTSmart : Driver
             self.current_func = self.next_func
             self.next_func = nil
         end
+        tasmota.defer(/->self.update_widget())
+    end
+
+
+
+    # Widget update method
+    def update_widget()
+        import MI32
+        
+        if !MI32.widget() || self.target_temperature == nil
+            self.unsent_widget = true
+            return
+        end
+        
+        var title = format('🌡️ EQ3 %s', self.mac_address)
+        
+        # Mode icon/color
+        var mode_icon = "⚙️"
+        var mode_text = "UNKNOWN"
+        var mode_color = "#999"
+        
+        if self.mode == self.MODE_BOOST
+            mode_icon = "🚀"
+            mode_text = "BOOST"
+            mode_color = "#F66"
+        elif self.mode == self.MODE_HOLIDAY
+            mode_icon = "🏖️"
+            mode_text = "HOLIDAY"
+            mode_color = "#6CF"
+        elif self.mode == self.MODE_MANUAL
+            mode_icon = "👤"
+            mode_text = "MANUAL"
+            mode_color = "#FC6"
+        elif self.mode == self.MODE_AUTO
+            mode_icon = "🤖"
+            mode_text = "AUTO"
+            mode_color = "#6C6"
+        end
+        
+        # Left section: Text info with title at top
+        var info_html = format(
+            "<div style='flex:1;'>"
+            "<h3 style='font-size:0.9em;font-weight:bold;'>%s</h3>"
+            "<div style='font-size:1.1em;font-weight:bold;color:%s;'>%s %s</div>",
+            title, mode_color, mode_icon, mode_text
+        )
+        
+        # Status icons with values - always shown, desaturated when off/false
+        var lock_style = (self.lock_status != self.LOCK_UNLOCKED) ? "" : "filter:saturate(0);"
+        var dst_style = (self.dst_active) ? "" : "filter:saturate(0);"
+        
+        info_html = info_html .. format(
+            "<div style='font-size:1.1em;margin-top:5px;'>"
+            "<span style='%s'>🔒</span> "
+            "<span style='%s'>🕐</span> "
+            "<p>offset: %.1f °C</p>"
+            "</div>",
+            lock_style, dst_style, self.temp_offset
+        )
+        
+        # Vacation info
+        if self.vacation_until != nil
+            info_html = info_html .. format(
+                "<div style='color:%s;'>🏖️ Until: %s</div>",
+                mode_color, self.vacation_until
+            )
+        end
+        
+        # Warnings
+        var warnings = []
+        if self.window_open warnings.push('🪟') end
+        if self.low_battery warnings.push('🔋') end
+        
+        if size(warnings) > 0
+            var warning_text = warnings[0]
+            for i:1..size(warnings)-1
+                warning_text = warning_text .. ' ' .. warnings[i]
+            end
+            info_html = info_html .. format(
+                "<div style='color:#F60;font-size:1.2em;'>%s</div>",
+                warning_text
+            )
+        end
+        
+        info_html = info_html .. "</div>"
+        
+        # Middle: Valve gauge
+        var gauge_valve = format(
+            "<div style='flex:1;'>{G,240,240,%d,0,100,%%}</div>",
+            (self.valve_position != nil) ? self.valve_position : 0
+        )
+
+        var gauge_temp = format(
+            "<div style='flex:1;'>"
+            "{G,240,240,%.1f,0,%.1f,"
+            "100,150,255,0,"
+            "100,200,255,%d,"
+            "255,200,100,%d,"
+            "°C}",
+            self.target_temperature, self.EQ3BT_MAX_TEMP,
+            self.eco_temp, self.comfort_temp
+        )
+        
+        # Add eco/comfort display below gauge
+        gauge_temp = gauge_temp .. format(
+            "<div style='font-size:0.75em;margin-bottom:3px;text-align:center;'>"
+            "🌙 %.1f°C | ☀️ %.1f°C</div>",
+            self.eco_temp, self.comfort_temp
+        )
+        
+        gauge_temp = gauge_temp .. "</div>"
+
+        # Final widget: Three columns
+        self.pending_widget = format(
+            "<div class='box w2 h1' id='eq3_widget' style='overflow:hidden;'>"
+            "<div style='display:flex;align-items:flex-start;'>%s%s%s</div>"
+            "</div>",
+            info_html, gauge_valve, gauge_temp
+        )
+        
+        MI32.widget(self.pending_widget)
+        self.last_widget_update = tasmota.millis()
+        self.unsent_widget = false
+        
+        log("EQ3: Widget updated", 3)
     end
 
     # Console Commands
@@ -477,6 +647,8 @@ class EQ3BTSmart : Driver
         self.connect(/->self.syncTime())
         tasmota.resp_cmnd({"Status": "Connecting and syncing time"})
     end
+
+
 
     def cmndTemp(cmd, idx, payload, payload_json)
         var temp = real(payload)
@@ -578,18 +750,22 @@ class EQ3BTSmart : Driver
         tasmota.resp_cmnd({"Status": "Closing valve (4.5°C)"})
     end
 
+
+
     def cmndDisconnect(cmd, idx, payload, payload_json)
         self.disconnect()
         tasmota.resp_cmnd({"Status": "Disconnected"})
     end
+
+
 
     # Web UI Display
     def web_sensor()
         if self.target_temperature == nil return nil end
         import string
         var msg = string.format(
-                 "{s}EQ3 MAC{m}%s{e}"..
-                 "{s}EQ3 Target Temp{m}%.1f °C{e}"..
+                 "{s}EQ3 MAC{m}%s{e}"
+                 "{s}EQ3 Target Temp{m}%.1f °C{e}"
                  "{s}EQ3 Valve{m}%d %%{e}",
                  self.mac_address, self.target_temperature, self.valve_position)
         
@@ -615,12 +791,20 @@ class EQ3BTSmart : Driver
             msg = msg .. string.format("{s}EQ3 Offset{m}%.1f °C{e}", self.temp_offset)
         end
         
+        if self.dst_active != nil
+            msg = msg .. string.format("{s}EQ3 DST{m}%s{e}", self.dst_active ? "Active" : "Inactive")
+        end
+        
         if self.window_open
             msg = msg .. "{s}EQ3 Window{m}OPEN{e}"
         end
         
         if self.low_battery
             msg = msg .. "{s}EQ3 Battery{m}LOW{e}"
+        end
+        
+        if self.vacation_until != nil
+            msg = msg .. string.format("{s}EQ3 Vacation{m}%s{e}", self.vacation_until)
         end
         
         tasmota.web_send_decimal(msg)
@@ -655,6 +839,10 @@ class EQ3BTSmart : Driver
             data['TempOffset'] = self.temp_offset
         end
         
+        if self.dst_active != nil
+            data['DST'] = self.dst_active
+        end
+        
         if self.window_open != nil
             data['WindowOpen'] = self.window_open
         end
@@ -663,15 +851,23 @@ class EQ3BTSmart : Driver
             data['LowBattery'] = self.low_battery
         end
         
+        if self.vacation_until != nil
+            data['VacationUntil'] = self.vacation_until
+        end
+        
         var msg = string.format(",\"EQ3\":%s", json.dump(data))
         tasmota.response_append(msg)
     end
 end
 
+
+
 # Initialize with your thermostat's MAC address and PIN
 # Replace with your actual values
 var eq3 = EQ3BTSmart("001A221FCB75", 016414)  # PIN as integer
 tasmota.add_driver(eq3)
+
+
 
 # Register console commands
 tasmota.add_cmd('EQ3Connect', /c,i,p,j->eq3.cmndConnect(c,i,p,j))

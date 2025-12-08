@@ -18,10 +18,13 @@ class EQ3BTSmart : Driver
 
     # Service UUID (vendor specific)
     static SERVICE = "3e135142-654f-9090-134a-a6ff5bb77046"
-    
+    static SERVICE_DEVICE_INFO = "180A"
+
     # Characteristic UUIDs (write and notify)
     static CHAR_WRITE = "3fa4585a-ce4a-3bad-db4b-b8df8179ea09"
     static CHAR_NOTIFY = "d0e8434d-cd29-0996-af41-6c90f4e0eb2a"
+    static CHAR_MANUFACTURER = "2A29"
+    static CHAR_MODEL = "2A24"
     
     # Command IDs (corrected per protocol spec)
     static CMD_SET_DATETIME = 0x03
@@ -60,17 +63,11 @@ class EQ3BTSmart : Driver
     static LOCK_BOTH = 3
     
     # Device state
-    var target_temperature
-    var mode
-    var valve_position
-    var low_battery
-    var lock_status
-    var dst_active
-    var window_open
-    var comfort_temp
-    var eco_temp
-    var temp_offset
+    var target_temperature, eco_temp, comfort_temp, temp_offset
+    var mode, valve_position
+    var low_battery, lock_status, dst_active, window_open
     var vacation_until
+    var manufacturer, model
     
     def init(MAC, pin)
         import BLE
@@ -87,19 +84,43 @@ class EQ3BTSmart : Driver
         self.last_widget_update = 0
         self.widget_update_interval = 20000  # 20 seconds in milliseconds
         self.vacation_until = nil
+        self.manufacturer = "EQ3"
+        self.model = "unknown"
         
         BLE.conn_cb(cbp, self.buf)
         BLE.set_MAC(bytes(MAC), 0, pin)
-        BLE.set_svc(self.SERVICE)
-        
         log(f"EQ3: Initialized for MAC: {MAC}", 2)
+        self.readDeviceInfo()
     end
 
-
+    # Read device information (manufacturer and model)
+    def readDeviceInfo()
+        import BLE
+        log("EQ3: Reading device info...", 2)
+        BLE.set_svc(self.SERVICE_DEVICE_INFO)
+        BLE.set_chr(self.CHAR_MANUFACTURER)
+        BLE.run(1)  # Read operation
+        self.then(/->self.readModel())
+    end
+    
+    def readModel()
+        import BLE
+        BLE.set_chr(self.CHAR_MODEL)
+        BLE.run(1)  # Read operation
+        self.then(/->self.syncTimeAfterDeviceInfo())
+    end
+    
+    def syncTimeAfterDeviceInfo()
+        import BLE
+        # Switch back to main service for time sync
+        BLE.set_svc(self.SERVICE)
+        BLE.set_chr(self.CHAR_NOTIFY)
+        self.connect(/->self.syncTime())
+    end
 
     def connect(next_action)
         import BLE
-        if self.is_connected || self.is_subscribed
+        if self.is_connected && self.is_subscribed
             log("EQ3: Already connected or subscribed, executing action immediately", 3)
             # Already subscribed - execute action immediately, may reconnect if needed
             if next_action != nil
@@ -115,7 +136,7 @@ class EQ3BTSmart : Driver
         end
         # Subscribe to notifications on the notify characteristic
         BLE.set_chr(self.CHAR_NOTIFY)
-        BLE.run(3)  # Subscribe (connects if needed)
+        BLE.run(3)  # Subscribe (connects && scubscribes if needed)
     end
     
     def disconnect()
@@ -505,7 +526,17 @@ class EQ3BTSmart : Driver
         elif op == 2  # Write completed
             log("EQ3: Write OK", 3)
         elif op == 1  # Read completed
-            log("EQ3: Read OK", 3)
+            log(f"EQ3: Read OK, uuid: {uuid}, len: {self.buf[0]}", 3)
+            if self.buf[0] > 0
+                var value_str = self.buf[1..self.buf[0]].asstring() # we only expect string for every read op
+                if uuid == 0x2a29
+                    self.manufacturer = value_str
+                    log(f"EQ3: Manufacturer: {self.manufacturer}", 2)
+                elif uuid == 0x2a24
+                    self.model = value_str
+                    log(f"EQ3: Model: {self.model}", 2)
+                end
+            end
         else
             log(f"EQ3: Unknown op: {op}", 2)
         end
@@ -518,8 +549,6 @@ class EQ3BTSmart : Driver
         tasmota.defer(/->self.update_widget())
     end
 
-
-
     # Widget update method
     def update_widget()
         import MI32
@@ -529,8 +558,53 @@ class EQ3BTSmart : Driver
             return
         end
         
-        var title = format('🌡️ EQ3 %s', self.mac_address)
+        var title = format('%s %s', self.manufacturer, self.model)
         
+        # Status icons with values - always shown, desaturated when off/false
+        var lock_style = (self.lock_status != self.LOCK_UNLOCKED) ? "" : "filter:saturate(0);"
+        var dst_style = (self.dst_active) ? "" : "filter:saturate(0);"
+        var battery_tint = self.low_battery ? 270 : 0 # low battery rotates green to red
+        # Left section: Text info with title at top
+        var info_html = format(
+            "<div style='flex:1;'>"
+            "<p>MAC:%s <span style='filter: hue-rotate(%ddeg);'> 🔋</span>"
+            "<span style='%s'>🔒</span>"
+            "<span style='%s'>🕐</span></p>"
+            "<p>%s</p>",
+            self.mac_address, battery_tint, lock_style, dst_style, title
+        )
+ 
+        info_html = info_html .. format(
+            "<p>Temp-offset: %.1f °C</p>",
+            self.temp_offset
+        )
+        
+        # # Vacation info
+        # if self.vacation_until != nil
+        #     info_html = info_html .. format(
+        #         "<div style='color:%s;'>🏖️ Until: %s</div>",
+        #         mode_color, self.vacation_until
+        #     )
+        # end
+        
+        # # Warnings
+        # var warnings = []
+        # if self.window_open warnings.push('🪟') end
+        # if self.low_battery warnings.push('🔋') end
+        
+        # if size(warnings) > 0
+        #     var warning_text = warnings[0]
+        #     for i:1..size(warnings)-1
+        #         warning_text = warning_text .. ' ' .. warnings[i]
+        #     end
+        #     info_html = info_html .. format(
+        #         "<div style='color:#F60;font-size:1.2em;'>%s</div>",
+        #         warning_text
+        #     )
+        # end
+        
+        info_html = info_html .. "</div>"
+    
         # Mode icon/color
         var mode_icon = "⚙️"
         var mode_text = "UNKNOWN"
@@ -554,85 +628,32 @@ class EQ3BTSmart : Driver
             mode_color = "#6C6"
         end
         
-        # Left section: Text info with title at top
-        var info_html = format(
-            "<div style='flex:1;'>"
-            "<h3 style='font-size:0.9em;font-weight:bold;'>%s</h3>"
-            "<div style='font-size:1.1em;font-weight:bold;color:%s;'>%s %s</div>",
-            title, mode_color, mode_icon, mode_text
-        )
-        
-        # Status icons with values - always shown, desaturated when off/false
-        var lock_style = (self.lock_status != self.LOCK_UNLOCKED) ? "" : "filter:saturate(0);"
-        var dst_style = (self.dst_active) ? "" : "filter:saturate(0);"
-        
-        info_html = info_html .. format(
-            "<div style='font-size:1.1em;margin-top:5px;'>"
-            "<span style='%s'>🔒</span> "
-            "<span style='%s'>🕐</span> "
-            "<p>offset: %.1f °C</p>"
-            "</div>",
-            lock_style, dst_style, self.temp_offset
-        )
-        
-        # Vacation info
-        if self.vacation_until != nil
-            info_html = info_html .. format(
-                "<div style='color:%s;'>🏖️ Until: %s</div>",
-                mode_color, self.vacation_until
-            )
-        end
-        
-        # Warnings
-        var warnings = []
-        if self.window_open warnings.push('🪟') end
-        if self.low_battery warnings.push('🔋') end
-        
-        if size(warnings) > 0
-            var warning_text = warnings[0]
-            for i:1..size(warnings)-1
-                warning_text = warning_text .. ' ' .. warnings[i]
-            end
-            info_html = info_html .. format(
-                "<div style='color:#F60;font-size:1.2em;'>%s</div>",
-                warning_text
-            )
-        end
-        
-        info_html = info_html .. "</div>"
-        
         # Middle: Valve gauge
         var gauge_valve = format(
-            "<div style='flex:1;'>{G,240,240,%d,0,100,%%}</div>",
-            (self.valve_position != nil) ? self.valve_position : 0
+            "<div style=''>{G,200,170,%d,0,100,%%}"
+            "<div style='text-align:center;padding-top:0;color:%s;'>%s %s</div>"
+            "</div>", self.valve_position, mode_color, mode_icon, mode_text
         )
 
         var gauge_temp = format(
-            "<div style='flex:1;'>"
-            "{G,240,240,%.1f,0,%.1f,"
+            "<div style=''>"
+            "{G,200,170,%.1f,0,%.1f,"
             "100,150,255,0,"
             "100,200,255,%d,"
             "255,200,100,%d,"
-            "°C}",
+            "°C}"
+            "<div style='text-align:center;padding-top:0;'> 🌙 %.1f°C | ☀️ %.1f°C</div></div>",
             self.target_temperature, self.EQ3BT_MAX_TEMP,
+            self.eco_temp, self.comfort_temp,
             self.eco_temp, self.comfort_temp
         )
-        
-        # Add eco/comfort display below gauge
-        gauge_temp = gauge_temp .. format(
-            "<div style='font-size:0.75em;margin-bottom:3px;text-align:center;'>"
-            "🌙 %.1f°C | ☀️ %.1f°C</div>",
-            self.eco_temp, self.comfort_temp
-        )
-        
-        gauge_temp = gauge_temp .. "</div>"
 
         # Final widget: Three columns
         self.pending_widget = format(
-            "<div class='box w2 h1' id='eq3_widget' style='overflow:hidden;'>"
+            "<div class='box w2 h1' id='eq3_widget' style='overflow:hidden;padding-top:0;'>"
             "<div style='display:flex;align-items:flex-start;'>%s%s%s</div>"
-            "</div>",
-            info_html, gauge_valve, gauge_temp
+            "</div>"
+            ,info_html, gauge_valve, gauge_temp
         )
         
         MI32.widget(self.pending_widget)
@@ -647,8 +668,6 @@ class EQ3BTSmart : Driver
         self.connect(/->self.syncTime())
         tasmota.resp_cmnd({"Status": "Connecting and syncing time"})
     end
-
-
 
     def cmndTemp(cmd, idx, payload, payload_json)
         var temp = real(payload)

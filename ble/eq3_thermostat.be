@@ -4,8 +4,6 @@
   SPDX-License-Identifier: GPL-3.0-only
 -#
 
-
-
 class EQ3BTSmart : Driver
     var buf
     var current_func, next_func
@@ -66,7 +64,7 @@ class EQ3BTSmart : Driver
     var target_temperature, eco_temp, comfort_temp, temp_offset
     var mode, valve_position
     var low_battery, lock_status, dst_active, window_open
-    var vacation_until
+    var vacation_until, schedule_hourly
     var manufacturer, model
     
     def init(MAC, pin)
@@ -307,6 +305,119 @@ class EQ3BTSmart : Driver
         log("EQ3: Set to CLOSE (4.5°C)", 2)
     end
 
+        # Read schedule for a specific day (0=Sat, 1=Sun, 2=Mon, 3=Tue, 4=Wed, 5=Thu, 6=Fri)
+    def readSchedule(day)
+        if day < 0 || day > 6
+            log(f"EQ3: Invalid day: {day}", 2)
+            return
+        end
+        var cmd = bytes(-2)
+        cmd[0] = self.CMD_READ_SCHEDULE
+        cmd[1] = day
+        self.writeCommand(cmd)
+        log(f"EQ3: Read schedule for day: {day}", 2)
+    end
+    
+    def parseSchedule()
+        if self.buf[0] < 3
+            log(f"EQ3: Schedule data too short: {self.buf[0]} bytes", 2)
+            return
+        end
+        
+        log(f"EQ3: Raw schedule data ({self.buf[0]} bytes): {self.buf[1..self.buf[0]].tohex()}", 3)
+        
+        var notif_id = self.buf[1]
+        if notif_id != self.NOTIF_SCHEDULE
+            log(f"EQ3: Not a schedule notification: 0x{notif_id:02X}", 2)
+            return
+        end
+        
+        var day = self.buf[2]
+        
+        # Initialize hourly schedule storage (24 bytes, temp*2 encoding)
+        self.schedule_hourly = bytes(-24)
+        
+        # Start with midnight temperature
+        var current_temp_byte = self.buf[3]
+        var current_hour = 0
+        
+        # Parse events and fill hourly schedule
+        var i = 4
+        while i <= 15
+            var time_byte = self.buf[i]
+            if time_byte == 0 break end
+            
+            var event_hour = int(time_byte / 6)
+            var temp_byte = self.buf[i + 1]
+            
+            # Fill from current_hour up to event_hour
+            var h = current_hour
+            while h < event_hour
+                self.schedule_hourly[h] = current_temp_byte
+                h += 1
+            end
+            
+            # Update for next segment
+            current_temp_byte = temp_byte
+            current_hour = event_hour
+            
+            if time_byte == 0x90 break end  # 24:00
+            i += 2
+        end
+        
+        # Fill remaining hours if any
+        var h = current_hour
+        while h < 24
+            self.schedule_hourly[h] = current_temp_byte
+            h += 1
+        end
+        
+        # Build schedule string for logging (original format: temp-HH:MM)
+        var schedule_parts = []
+        var temp_midnight = self.buf[3] / 2.0
+        var first_time_byte = self.buf[4]
+        var first_hh = int(first_time_byte / 6)
+        var first_mm = (first_time_byte % 6) * 10
+        schedule_parts.push(format("%.1f-%02d:%02d", temp_midnight, first_hh, first_mm))
+        
+        i = 4
+        while i <= 15
+            var time_byte = self.buf[i]
+            if time_byte == 0 break end
+            
+            var temp_byte = self.buf[i + 1]
+            var temp = temp_byte / 2.0
+            var hh = int(time_byte / 6)
+            var mm = (time_byte % 6) * 10
+            
+            schedule_parts.push(format("%.1f-%02d:%02d", temp, hh, mm))
+            
+            if time_byte == 0x90 break end
+            i += 2
+        end
+        
+        # Join all parts
+        var schedule_str = schedule_parts[0]
+        var j = 1
+        while j < size(schedule_parts)
+            schedule_str = schedule_str .. "," .. schedule_parts[j]
+            j += 1
+        end
+        
+        import json
+        var day_names = ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
+        var schedule_json = {
+            "EQ3": {
+                "cmd": "reqprofile",
+                format("profileday%d", day): schedule_str,
+                "day_name": day_names[day]
+            }
+        }
+        
+        log(f"EQ3: {json.dump(schedule_json)}", 2)
+        
+        self.disconnect()
+    end
 
 
     # Parse status notification (0x02) - Full 15 byte format
@@ -444,21 +555,15 @@ class EQ3BTSmart : Driver
         self.update_widget()
     end
 
-
-
     # Promise-like async handling
     def wait()
         # Placeholder - do nothing
     end
 
-
-
     def then(func)
         self.next_func = func
         self.current_func = self.wait
     end
-
-
 
     def every_100ms()
         self.current_func()
@@ -479,8 +584,6 @@ class EQ3BTSmart : Driver
         end
     end
 
-
-
     # BLE callback handler
     def cb(error, op, uuid, handle)
         if op == 5  # Disconnect completed
@@ -496,12 +599,6 @@ class EQ3BTSmart : Driver
         
         self.is_connected = true
         
-        # Operation codes:
-        # 1 = Read completed
-        # 2 = Write completed
-        # 3 = Subscribe completed
-        # 103 = Notification received
-        
         if op == 3  # Subscribe completed
             log("EQ3: Subscribe OK", 3)
             self.is_subscribed = true
@@ -516,7 +613,7 @@ class EQ3BTSmart : Driver
                 if notif_id == self.NOTIF_STATUS
                     self.parseStatus()
                 elif notif_id == self.NOTIF_SCHEDULE
-                    log("EQ3: Schedule notification received (not parsed)", 2)
+                    self.parseSchedule() 
                 else
                     log(f"EQ3: Unknown notification: 0x{notif_id:02X}", 2)
                     log(f"EQ3: Raw data: {self.buf[1..self.buf[0]].tohex()}", 4)
@@ -561,8 +658,8 @@ class EQ3BTSmart : Driver
         var title = format('%s %s', self.manufacturer, self.model)
         
         # Status icons with values - always shown, desaturated when off/false
-        var lock_style = (self.lock_status != self.LOCK_UNLOCKED) ? "" : "filter:saturate(0);"
-        var dst_style = (self.dst_active) ? "" : "filter:saturate(0);"
+        var lock_style = (self.lock_status != self.LOCK_UNLOCKED) ? "" : "filter:saturate(0)opacity(0.4);"
+        var dst_style = (self.dst_active) ? "" : "filter:saturate(0)opacity(0.4);"
         var battery_tint = self.low_battery ? 270 : 0 # low battery rotates green to red
         # Left section: Text info with title at top
         var info_html = format(
@@ -575,9 +672,22 @@ class EQ3BTSmart : Driver
         )
  
         info_html = info_html .. format(
-            "<p>Temp-offset: %.1f °C</p>",
+            "<p>Temp-offset: %.1f °C</p>"
+            ,
             self.temp_offset
         )
+
+        # Add schedule histogram if available
+        if self.schedule_hourly != nil
+            var temps = ""
+            var i = 0
+            while i < 24
+                if i > 0 temps = temps .. "," end
+                temps = temps .. format("%.1f", self.schedule_hourly[i] / 2.0)
+                i += 1
+            end
+            info_html = info_html .. format("{h,260,30,(100,150,180):%s}", temps)
+        end
         
         # # Vacation info
         # if self.vacation_until != nil
@@ -769,14 +879,22 @@ class EQ3BTSmart : Driver
         tasmota.resp_cmnd({"Status": "Closing valve (4.5°C)"})
     end
 
-
-
     def cmndDisconnect(cmd, idx, payload, payload_json)
         self.disconnect()
         tasmota.resp_cmnd({"Status": "Disconnected"})
     end
 
-
+    def cmndReadSchedule(cmd, idx, payload, payload_json)
+        print("_________",payload)
+        # Get current day of week and convert to EQ3 format
+        var now = tasmota.time_dump(tasmota.rtc()['local'])
+        # now['weekday'] is 0=Sunday, 1=Monday, ..., 6=Saturday
+        # EQ3 format: 0=Saturday, 1=Sunday, 2=Monday, ..., 6=Friday
+        var eq3_day = (now['weekday'] + 6) % 7
+        
+        self.connect(/->self.readSchedule(eq3_day))
+        tasmota.resp_cmnd({"Status": format("Reading schedule for day %d", eq3_day)})
+    end
 
     # Web UI Display
     def web_sensor()
@@ -879,14 +997,10 @@ class EQ3BTSmart : Driver
     end
 end
 
-
-
 # Initialize with your thermostat's MAC address and PIN
 # Replace with your actual values
 var eq3 = EQ3BTSmart("001A221FCB75", 016414)  # PIN as integer
 tasmota.add_driver(eq3)
-
-
 
 # Register console commands
 tasmota.add_cmd('EQ3Connect', /c,i,p,j->eq3.cmndConnect(c,i,p,j))
@@ -902,3 +1016,4 @@ tasmota.add_cmd('EQ3Window', /c,i,p,j->eq3.cmndWindow(c,i,p,j))
 tasmota.add_cmd('EQ3Open', /c,i,p,j->eq3.cmndOpen(c,i,p,j))
 tasmota.add_cmd('EQ3Close', /c,i,p,j->eq3.cmndClose(c,i,p,j))
 tasmota.add_cmd('EQ3Disconnect', /c,i,p,j->eq3.cmndDisconnect(c,i,p,j))
+tasmota.add_cmd('EQ3ReadSchedule', /c,i,p,j->eq3.cmndReadSchedule(c,i,p,j))

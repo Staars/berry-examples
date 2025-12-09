@@ -658,17 +658,24 @@ class EQ3BTSmart : Driver
         var title = format('%s %s', self.manufacturer, self.model)
         
         # Status icons with values - always shown, desaturated when off/false
-        var lock_style = (self.lock_status != self.LOCK_UNLOCKED) ? "" : "filter:saturate(0)opacity(0.4);"
-        var dst_style = (self.dst_active) ? "" : "filter:saturate(0)opacity(0.4);"
+        var muted = "filter:saturate(0)opacity(0.4);"
+        var lock_style = (self.lock_status != self.LOCK_UNLOCKED) ? "" : muted
+        var dst_style = (self.dst_active) ? "" : muted
         var battery_tint = self.low_battery ? 270 : 0 # low battery rotates green to red
+        var window_style = (self.window_open) ? "" : muted
+        var vacation_style = (self.vacation_until) ? "" : muted
         # Left section: Text info with title at top
         var info_html = format(
             "<div style='flex:1;'>"
-            "<p>MAC:%s <span style='filter: hue-rotate(%ddeg);'> 🔋</span>"
+            "<p>MAC:%s<br>"
+            "<span style='filter: hue-rotate(%ddeg);'> 🔋</span>"
             "<span style='%s'>🔒</span>"
-            "<span style='%s'>🕐</span></p>"
-            "<p>%s</p>",
-            self.mac_address, battery_tint, lock_style, dst_style, title
+            "<span style='%s'>🕐</span>"
+            "<span style='%s'>🪟</span>"
+            "<span style='%s'>🏖️</span>"
+            "</p>"
+            "<h2>%s</h2>",
+            self.mac_address, battery_tint, lock_style, dst_style, window_style, vacation_style, title
         )
  
         info_html = info_html .. format(
@@ -686,32 +693,8 @@ class EQ3BTSmart : Driver
                 temps = temps .. format("%.1f", self.schedule_hourly[i] / 2.0)
                 i += 1
             end
-            info_html = info_html .. format("{h,260,30,(100,150,180):%s}", temps)
+            info_html = info_html .. format("{h,270,30,(100,150,180):%s}", temps)
         end
-        
-        # # Vacation info
-        # if self.vacation_until != nil
-        #     info_html = info_html .. format(
-        #         "<div style='color:%s;'>🏖️ Until: %s</div>",
-        #         mode_color, self.vacation_until
-        #     )
-        # end
-        
-        # # Warnings
-        # var warnings = []
-        # if self.window_open warnings.push('🪟') end
-        # if self.low_battery warnings.push('🔋') end
-        
-        # if size(warnings) > 0
-        #     var warning_text = warnings[0]
-        #     for i:1..size(warnings)-1
-        #         warning_text = warning_text .. ' ' .. warnings[i]
-        #     end
-        #     info_html = info_html .. format(
-        #         "<div style='color:#F60;font-size:1.2em;'>%s</div>",
-        #         warning_text
-        #     )
-        # end
         
         info_html = info_html .. "</div>"
     

@@ -270,6 +270,8 @@ class SFTP
     static REALPATH = 16
     static STAT     = 17
     static RENAME   = 18
+    static EXTENDED = 200
+    static EXTENDED_REPLY = 201
     static STATUS   = 101
     static DATA     = 103
     static NAME     = 104
@@ -481,7 +483,13 @@ class SFTP
             id = d[5..8]
             log(f"SFTP: type {ptype}, id {id}, data {d}", 3)
             if ptype == SFTP.INIT
-                r = bytes('000000050200000003') # no extended data support, ver 3
+                # VERSION reply: ver 3 + advertise limits@openssh.com extension
+                r = bytes("00000000") # size placeholder
+                r .. SFTP.VERSION
+                r.add(3,-4) # version 3
+                SSH_MSG.add_string(r,"limits@openssh.com")
+                SSH_MSG.add_string(r,"1")
+                r.seti(0,size(r)-4,-4)
             elif ptype == SFTP.LSTAT
                 var url = d[13..].asstring()
                 log(f"SFTP LSTAT for: {url}",3) 
@@ -539,8 +547,10 @@ class SFTP
                 next_index += 4
                 var data = d[next_index..]
                 log(f"SFTP WRITE: {url}",3)
-                self.file.write(data,offset, id) # Todo: check success
-                if self.file.is_writing == false
+                var wr = self.file.write(data,offset, id)
+                if wr == nil
+                    r = self.status(id, 4) # SSH_FX_FAILURE
+                elif self.file.is_writing == false
                     r = self.status(self.file.id, 0) # SSH_FX_OK
                 else
                     r = "" # -> MSG_IGNORE
@@ -596,6 +606,28 @@ class SFTP
                 #ignore for now
                 self.file.close()
                 r = self.status(id, 0) # SSH_FX_OK
+            elif ptype == SFTP.EXTENDED
+                var next_index = 9
+                var next_length = SSH_MSG.get_item_length(d[next_index..])
+                var ext_name = SSH_MSG.get_string(d, next_index, next_length)
+                log(f"SFTP EXTENDED: {ext_name}",3)
+                if ext_name == "limits@openssh.com"
+                    # reply with server limits to reduce client pipelining
+                    r = bytes("00000000") # size placeholder
+                    r .. SFTP.EXTENDED_REPLY
+                    r .. id
+                    r.add(0,-8)                    # max-read-len: uint64
+                    r.add(SESSION.MAX_PACKET_SIZE,-8)
+                    r.add(0,-8)                    # max-write-len: uint64
+                    r.add(SESSION.MAX_PACKET_SIZE,-8)
+                    r.add(0,-8)                    # max-open-handles: uint64 (0 = no limit)
+                    r.add(0,-8)
+                    r.add(0,-8)                    # extensions (none)
+                    r.add(0,-8)
+                    r.seti(0,size(r)-4,-4)
+                else
+                    r = self.status(id, 8) # OP_UNSUPPORTED
+                end
             else
                 log(f"SFTP: unknown packet type {ptype}", 2)
                 r = self.status(id,8) #OP_UNSUPPORTED
@@ -651,8 +683,8 @@ class BIN_PACKET
         var given_mac = self.buf[self.packet_length+4..self.packet_length+19]
         var mac = c.poly_run(data,poly_key)
         if mac != given_mac
-            #TODO: disconect
             log(f"SSH: MAC MISMATCH!! {mac} - {given_mac} ", 1)
+            self.session.mac_error = true
         end
     end
 
@@ -945,8 +977,14 @@ class SESSION
     var seq_nr_rx, seq_nr_tx, channel_nr
     var send_queue, overrun_buf
     var type # terminal or SFTP
+    var rx_window          # remaining receive window (bytes the client may still send)
+    var needs_window_adjust # flag: send WINDOW_ADJUST after response
+    var mac_error          # flag: MAC verification failed
 
     static MAX_PACKET_SIZE = 4096 # we must process the whole packet (crypt, auth, etc)
+    static RX_WINDOW_INITIAL = 2048  # small initial window to limit request pipelining
+    static RX_WINDOW_QUANTUM = 1024  # replenish this many bytes at a time
+    static RX_WINDOW_LOW     = 512   # refill when window drops below this
 
     static user = "admin"
     static password = "1234"
@@ -961,11 +999,40 @@ class SESSION
         self.seq_nr_tx = -1
         self.send_queue = []
         self.strict_mode = false # support by client
+        self.rx_window = self.RX_WINDOW_INITIAL
+        self.needs_window_adjust = false
+        self.mac_error = false
     end
 
     def deinit()
         self.type = nil
         self.bin_packet = nil
+    end
+
+    # consume receive window when channel data arrives
+    def window_consume(n)
+        self.rx_window -= n
+        if self.rx_window < 0
+            self.rx_window = 0
+        end
+        log(f"SSH: rx_window consumed {n}, remaining {self.rx_window}",3)
+        if self.rx_window < self.RX_WINDOW_LOW
+            self.needs_window_adjust = true
+        end
+    end
+
+    # build a CHANNEL_WINDOW_ADJUST packet to replenish the client's send budget
+    def make_window_adjust()
+        self.needs_window_adjust = false
+        self.rx_window += self.RX_WINDOW_QUANTUM
+        var r = bytes(16)
+        r .. SSH_MSG.CHANNEL_WINDOW_ADJUST
+        r.add(self.channel_nr,-4)
+        r.add(self.RX_WINDOW_QUANTUM,-4)
+        var p = BIN_PACKET(bytes(-32),self,false)
+        self.overrun_buf = nil
+        log(f"SSH: WINDOW_ADJUST +{self.RX_WINDOW_QUANTUM}, new rx_window {self.rx_window}",3)
+        return p.create(r, true)
     end
 
     def send_banner()
@@ -1100,14 +1167,16 @@ class SESSION
         var window_size = buf.geti(next_index,-4)
         next_index += 4
         var packet_size = buf.geti(next_index,-4)
-        log(f"SSH: type {channel_type}, nr{self.channel_nr}, window size {window_size}, packet size {packet_size}",2)
+        log(f"SSH: type {channel_type}, nr{self.channel_nr}, client window {window_size}, client packet {packet_size}",2)
+        # use server-controlled small window to throttle client request pipelining
+        self.rx_window = self.RX_WINDOW_INITIAL
         var r = bytes(64)
         r .. SSH_MSG.CHANNEL_OPEN_CONFIRMATION
         r.add(self.channel_nr,-4)
         r.add(self.channel_nr,-4)
-        r.add(window_size,-4)
+        r.add(self.RX_WINDOW_INITIAL,-4)  # server's receive window — intentionally small
         r.add(SESSION.MAX_PACKET_SIZE,-4)
-        # print(r)
+        log(f"SSH: server rx_window {self.RX_WINDOW_INITIAL}, max_packet {SESSION.MAX_PACKET_SIZE}",2)
         var enc_r = self.bin_packet.create(r ,true)
         return enc_r
     end
@@ -1144,7 +1213,11 @@ class SESSION
         end
         var r = bytes(64)
         if want_reply
-            r .. SSH_MSG.CHANNEL_SUCCESS # TODO: may really check
+            if self.type != nil
+                r .. SSH_MSG.CHANNEL_SUCCESS
+            else
+                r .. SSH_MSG.CHANNEL_FAILURE
+            end
         else
             r .. SSH_MSG.IGNORE
         end
@@ -1161,14 +1234,19 @@ class SESSION
         next_index += 4
         var next_length = SSH_MSG.get_item_length(buf[next_index..])
         var data = SSH_MSG.get_bytes(buf, next_index, next_length)
+        # consume receive window for the channel data bytes received
+        self.window_consume(next_length + 4) # data + length field
         log(f"SSH: ch {channel} data {next_length} {data}",3)
         var t_r = self.type.process(data)
         if t_r == ""
-            # self.seq_nr_rx -= 1 # pending write job or something else
             var r = bytes()
             r .. SSH_MSG.IGNORE
             var enc_r = self.bin_packet.create(r ,true)
             return enc_r
+        end
+        # queue window adjust to be sent after the response
+        if self.needs_window_adjust
+            self.send_queue.push(/->self.make_window_adjust())
         end
         var r = bytes()
         r .. SSH_MSG.CHANNEL_DATA
@@ -1221,7 +1299,7 @@ class SESSION
                 log(f"SSH: unhandled session message type: {self.bin_packet.payload[0]}", 2)
             end
         else
-            self.seq_nr_rx -= 1 # TODO: check
+            self.seq_nr_rx -= 1 # incomplete packet, seq_nr was incremented prematurely
             return ""
         end
         r .. SSH_MSG.IGNORE
@@ -1336,8 +1414,8 @@ class SSH : Driver
         var bin = session.bin_packet
         session.bin_packet = nil
         self.send(resp)
-        if size(session.send_queue) != 0
-            self.send(session.send_queue.pop()())
+        while size(session.send_queue) != 0
+            self.send(session.send_queue.pop(0)())
         end
         log(f"SSH: {self.session.seq_nr_tx} >>> {resp} _ {size(resp)} bytes",3)
     end
@@ -1358,6 +1436,12 @@ class SSH : Driver
         self.session.seq_nr_rx += 1
         log(f"SSH: {self.session.seq_nr_rx} <<< {d} _ {size(d)} bytes",3)
         if self.session.up == true
+            if self.session.mac_error
+                log("SSH: disconnecting due to MAC error",1)
+                self.connection = false
+                self.client.close()
+                return
+            end
             response = self.session.process(d)
             if response != ""
                 self.sendResponse(response)

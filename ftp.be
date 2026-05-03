@@ -3,11 +3,8 @@
 #  only light error handling
 -#
 
-#@ solidify:ftp
-
-var ftp = module('ftp')
-
-class PATH    # helper class to hold the current directory 
+#@ solidify:PATH,weak
+class PATH    # helper class to hold the current directory
     var p  #  path components in a list
 
     def init()
@@ -50,18 +47,22 @@ class PATH    # helper class to hold the current directory
     end
 end
 
-class FTP
+#@ solidify:FTP,weak
+class FTP : Driver
 
     var connection, server, client, data_server, data_client, data_ip
     var dir, dir_list, dir_pos
     var file, file_size, file_rename, retries, chunk_size
     var binary_mode, active_ip, active_port, user_input
     var data_buf, data_ptr, fast_loop, data_op
+    var cmd_buf                                       # incoming control bytes pending newline
+    var data_pending_cb, data_pending_deadline        # async data connection setup
     static port = 21
     static data_port = 20         # data connection in passive mode
     static allow_anonymous = true # allow everything ..
     static user = "user"
     static password = "pass"
+    static data_timeout_ms = 5000 # how long to wait for data connection setup
 
     def init()
         self.server = tcpserver(self.port) # connection for control data
@@ -69,28 +70,67 @@ class FTP
         self.data_ip = tasmota.wifi()['ip']
         self.dir = PATH()
         self.readDir()
-        self.data_ptr = 0
-        self.active_port = nil
-        # tasmota.add_driver(self)
+        self.fast_loop = nil
+        self.data_client = nil
+        self.data_server = nil
+        self.reset_session()
+        tasmota.add_driver(self)
         log(f"FTP: init server on port {self.port}",1)
     end
 
+    # reset all per-session state, called on every new control connection
+    def reset_session()
+        self.data_ptr = 0
+        self.binary_mode = true
+        self.active_port = nil
+        self.active_ip = nil
+        self.file = nil
+        self.file_rename = nil
+        self.user_input = nil
+        self.cmd_buf = ""
+        self.data_op = nil
+        self.data_pending_cb = nil
+        self.data_pending_deadline = 0
+    end
+
     def deinit()
-        self.server.deinit()
-        self.data_server.deinit()
+        if self.fast_loop != nil
+            tasmota.remove_fast_loop(self.fast_loop)
+            self.fast_loop = nil
+        end
+        if self.server != nil
+            self.server.deinit()
+        end
+        if self.data_server != nil
+            self.data_server.deinit()
+            self.data_server = nil
+        end
+        if self.data_client != nil
+            self.data_client.close()
+            self.data_client.deinit()
+            self.data_client = nil
+        end
         tasmota.remove_driver(self)
     end
 
     def every_50ms()
         if self.connection == true
             self.loop()
+            # politely refuse a second concurrent client
+            if self.server.hasclient()
+                var c = self.server.acceptasync()
+                if c != nil
+                    c.write("421 Service not available, only one client supported\r\n")
+                    c.close()
+                    c.deinit()
+                end
+            end
         elif self.server.hasclient()
             self.client = self.server.acceptasync()
+            self.reset_session()
             self.sendResponse("220 Welcome")
             self.connection = true
             self.pubClientInfo()
-        else
-            self.connection = false
         end
     end
 
@@ -101,6 +141,11 @@ class FTP
                 self.connection = false
                 self.abortDataOp()
             end
+        end
+        # keep data_ip up to date in case of WiFi reconnect / DHCP renew
+        var ip = tasmota.wifi()['ip']
+        if ip != nil && ip != "" && ip != "0.0.0.0"
+            self.data_ip = ip
         end
     end
 
@@ -117,76 +162,134 @@ class FTP
     end
 
     def abortDataOp()
+        # if we are still waiting for a data connection to be established,
+        # cancel that pending op cleanly
+        if self.data_pending_cb != nil
+            self.data_pending_cb = nil
+            if self.fast_loop != nil
+                tasmota.remove_fast_loop(self.fast_loop)
+                self.fast_loop = nil
+            end
+            if self.data_client != nil
+                self.data_client.close()
+                self.data_client.deinit()
+                self.data_client = nil
+            end
+            return
+        end
         if self.data_op == "d"
             self.finishDownload(true)
         elif self.data_op == "u"
             self.finishUpload(true)
         elif self.data_op == "dir"
-            self.finishUpload(false)
+            self.finishTransferDir(false)
         end
     end
 
     def download() # ESP -> client
-        self.data_buf..self.file.readbytes(self.chunk_size)
+        if self.data_client == nil || self.data_client.connected() == false
+            self.finishDownload(true)
+            return
+        end
+        # only read more from disk if we have nothing left to send
         if size(self.data_buf) == 0
-            self.retries -= 1
-            if self.retries > 0
-                return
-            end
-        else
-            var written = self.data_client.write(self.data_buf)
-            self.data_buf.clear()
+            self.data_buf..self.file.readbytes(self.chunk_size)
+        end
+        if size(self.data_buf) == 0
+            # EOF
+            self.finishDownload(false)
+            return
+        end
+        var written = self.data_client.write(self.data_buf)
+        if written > 0
             self.data_ptr += written
-            if self.data_ptr < self.file_size
-                self.file.seek(self.data_ptr)
-                if self.retries > 0
-                    return
-                end
+            if written >= size(self.data_buf)
+                self.data_buf.clear()
+            else
+                # keep the un-sent tail for next iteration
+                self.data_buf = self.data_buf[written..]
+            end
+            self.retries = 10  # progress -> reset retry counter
+        else
+            self.retries -= 1
+            if self.retries <= 0
+                self.finishDownload(true)
             end
         end
-        self.finishDownload()
     end
 
     def finishDownload(error)
-        self.data_client.close()
-        tasmota.remove_fast_loop(self.fast_loop)
-        self.file.close()
+        if self.fast_loop != nil
+            tasmota.remove_fast_loop(self.fast_loop)
+            self.fast_loop = nil
+        end
+        if self.data_client != nil
+            self.data_client.close()
+            self.data_client.deinit()
+            self.data_client = nil
+        end
+        if self.file != nil
+            self.file.close()
+            self.file = nil
+        end
         if error
-            self.sendResponse(f"426 Connection closed; transfer aborted after {self.data_ptr} bytes.") 
+            self.sendResponse(f"426 Connection closed; transfer aborted after {self.data_ptr} bytes.")
         else
-            self.sendResponse(f"250 download done with {self.data_ptr} bytes.")
+            self.sendResponse(f"226 download done with {self.data_ptr} bytes.")
         end
         self.data_op = nil
+        self.data_ptr = 0
         tasmota.gc()
     end
 
     def upload() # client -> ESP
-        self.data_buf..self.data_client.readbytes()
+        if self.data_client == nil
+            self.finishUpload(true)
+            return
+        end
+        # bounded read to avoid unbounded heap allocation on a fast LAN
+        self.data_buf..self.data_client.readbytes(self.chunk_size)
 
         if size(self.data_buf) > 0
             self.file.write(self.data_buf)
             self.data_ptr += size(self.data_buf)
             self.data_buf.clear()
+            self.retries = 10  # progress -> reset retry counter
         else
             log(f"FTP: {self.retries} retries",4)
             self.retries -= 1
-            if self.retries > 0
-                return
+            if self.retries <= 0
+                # peer closed = normal end-of-file; otherwise treat as error
+                if self.data_client.connected() == false
+                    self.finishUpload(false)
+                else
+                    self.finishUpload(true)
+                end
             end
-            self.finishUpload()
         end
     end
 
     def finishUpload(error)
-        self.data_client.close()
-        tasmota.remove_fast_loop(self.fast_loop)
-        self.file.close()
+        if self.fast_loop != nil
+            tasmota.remove_fast_loop(self.fast_loop)
+            self.fast_loop = nil
+        end
+        if self.data_client != nil
+            self.data_client.close()
+            self.data_client.deinit()
+            self.data_client = nil
+        end
+        if self.file != nil
+            self.file.close()
+            self.file = nil
+        end
         if error
             self.sendResponse(f"426 Connection closed; transfer after {self.data_ptr} bytes")
         else
-            self.sendResponse(f"250 upload done with {self.data_ptr} bytes")
+            self.sendResponse(f"226 upload done with {self.data_ptr} bytes")
         end
         self.data_op = nil
+        self.data_ptr = 0
         tasmota.gc()
     end
 
@@ -238,6 +341,7 @@ class FTP
             self.dir_pos += 1
         else
             self.finishTransferDir(false)
+            return
         end
         if self.dir_pos < size(self.dir_list)
             return
@@ -246,7 +350,15 @@ class FTP
     end
 
     def finishTransferDir(success)
-        self.data_client.close()
+        if self.fast_loop != nil
+            tasmota.remove_fast_loop(self.fast_loop)
+            self.fast_loop = nil
+        end
+        if self.data_client != nil
+            self.data_client.close()
+            self.data_client.deinit()
+            self.data_client = nil
+        end
         if success
             var n = size(self.dir_list)
             self.sendResponse(f"226 {n} files in {self.dir.get_url()}")
@@ -254,13 +366,21 @@ class FTP
             self.sendResponse("426 Transfer aborted")
         end
         self.data_op = nil
-        tasmota.remove_fast_loop(self.fast_loop)
         tasmota.gc()
     end
 
     def readDir()
         import path
         self.dir_list = path.listdir(self.dir.get_url())
+    end
+
+    # very small path-safety helper; rejects path traversal and backslashes
+    def is_safe_arg(arg)
+        import string
+        if arg == nil || arg == "" return false end
+        if string.find(arg, "..") >= 0 return false end
+        if string.find(arg, "\\") >= 0 return false end
+        return true
     end
 
     def openFile(name,mode)
@@ -318,31 +438,130 @@ class FTP
         end
     end
 
-    def connectPassive()
-        if self.data_server.hasclient()
-            self.data_client = self.data_server.acceptasync()
-        end
-    end
-
-    def dataconnect()
+    # asynchronous data-connection setup.
+    # `op_cb` is invoked once the data connection is ready.
+    # In passive mode this waits up to `data_timeout_ms` for the client to
+    # connect, instead of failing immediately on a single hasclient() probe.
+    def dataconnect_start(op_cb)
+        # close any leftover data client first
         if self.data_client != nil
             self.data_client.close()
             self.data_client.deinit()
-        end
-        if self.active_port != nil
-            self.connectActive()
-        else
-            self.connectPassive()
-        end
-        if self.data_client == nil
-            self.sendResponse("425 Data connection failed")
-            return false
+            self.data_client = nil
         end
         self.data_buf = bytes()
         self.retries = 10
         self.chunk_size = 5760
-        self.sendResponse("150 Ready for data transfer")
+
+        if self.active_port != nil
+            self.connectActive()
+            if self.data_client == nil
+                self.sendResponse("425 Data connection failed (active)")
+                return false
+            end
+        else
+            if self.data_server == nil
+                self.sendResponse("425 No data server (issue PASV/EPSV first)")
+                return false
+            end
+        end
+
+        self.data_pending_cb = op_cb
+        self.data_pending_deadline = tasmota.millis(self.data_timeout_ms)
+        # avoid leaking a previous fast loop
+        if self.fast_loop != nil
+            tasmota.remove_fast_loop(self.fast_loop)
+        end
+        self.fast_loop = /->self.poll_data_ready()
+        tasmota.add_fast_loop(self.fast_loop)
         return true
+    end
+
+    # polled by fast_loop until the data connection is up or the timeout
+    # elapses; then fires the queued op_cb or replies 425.
+    def poll_data_ready()
+        var ready = false
+        if self.active_port != nil
+            # active mode: wait for our outgoing connect to complete
+            if self.data_client != nil && self.data_client.connected()
+                ready = true
+            end
+        else
+            # passive mode: wait for the client to connect to us
+            if self.data_client == nil && self.data_server != nil && self.data_server.hasclient()
+                self.data_client = self.data_server.acceptasync()
+            end
+            if self.data_client != nil
+                ready = true
+            end
+        end
+
+        if ready
+            tasmota.remove_fast_loop(self.fast_loop)
+            self.fast_loop = nil
+            var cb = self.data_pending_cb
+            self.data_pending_cb = nil
+            self.sendResponse("150 Ready for data transfer")
+            if cb != nil cb() end
+        elif tasmota.time_reached(self.data_pending_deadline)
+            tasmota.remove_fast_loop(self.fast_loop)
+            self.fast_loop = nil
+            self.data_pending_cb = nil
+            if self.data_client != nil
+                self.data_client.close()
+                self.data_client.deinit()
+                self.data_client = nil
+            end
+            self.sendResponse("425 Data connection failed (timeout)")
+        end
+    end
+
+    # callbacks queued by dataconnect_start, run once data connection is ready
+
+    def begin_upload(fname)
+        var mode = "w"
+        if self.data_ptr > 0
+            mode = "a"
+        end
+        if self.openFile(fname, mode)
+            self.data_op = "u"
+            self.fast_loop = /->self.upload()
+            tasmota.add_fast_loop(self.fast_loop)
+        else
+            self.sendResponse("550 Could not open file")
+            if self.data_client != nil
+                self.data_client.close()
+                self.data_client.deinit()
+                self.data_client = nil
+            end
+        end
+    end
+
+    def begin_download(fname)
+        if self.openFile(fname, "r")
+            self.file_size = self.file.size()
+            self.data_op = "d"
+            self.fast_loop = /->self.download()
+            tasmota.add_fast_loop(self.fast_loop)
+        else
+            self.sendResponse("550 Could not open file")
+            if self.data_client != nil
+                self.data_client.close()
+                self.data_client.deinit()
+                self.data_client = nil
+            end
+        end
+    end
+
+    def begin_listdir(mode)
+        if size(self.dir_list) > 0
+            self.data_op = "dir"
+            self.dir_pos = 0
+            self.fast_loop = /->self.transferDir(mode)
+            tasmota.add_fast_loop(self.fast_loop)
+        else
+            self.finishTransferDir(true)
+        end
     end
 
     def sendResponse(resp)
@@ -350,24 +569,52 @@ class FTP
         log(f"FTP: Response: {resp}",3)
     end
 
-    def handleConnection() # main loop for incoming commands
+    # read whatever is available on the control socket, accumulate into
+    # cmd_buf, and process every complete CRLF-terminated line.
+    def handleConnection()
+        import string
+        var d = self.client.read()
+        if d == nil || size(d) == 0 return end
+        self.cmd_buf = self.cmd_buf + d
+        var lines = string.split(self.cmd_buf, "\n")
+        # the last element is the (possibly empty) partial trailer
+        var n = size(lines)
+        self.cmd_buf = lines[n - 1]
+        var i = 0
+        while i < n - 1
+            var line = lines[i]
+            var ln = size(line)
+            if ln > 0 && line[ln - 1 .. ln - 1] == "\r"
+                line = (ln > 1) ? line[0 .. ln - 2] : ""
+            end
+            if size(line) > 0
+                self.process_command(line)
+            end
+            i += 1
+        end
+    end
+
+    # main dispatcher for a single FTP command line
+    def process_command(line)
         import string
         import mqtt
         import path
-        var d = self.client.read()
-        if size(d) == 0 return end
-        var items = string.split(d," ")
-        var cmd = items[0]
+        var sp = string.find(line, " ")
+        var cmd
         var arg = ""
-        var response = "" 
-        if size(items) > 1
-            arg = string.split(items[1],'\r\n')[0]
+        if sp < 0
+            cmd = line
         else
-            cmd = string.split(cmd,'\r\n')[0]
+            cmd = (sp > 0) ? line[0 .. sp - 1] : ""
+            if (sp + 1) < size(line)
+                arg = line[sp + 1 ..]
+            end
         end
+        cmd = string.toupper(cmd)
+        var response = ""
 
         log(f"FTP: Received: {cmd} {arg}",3)
-        
+
         # connect
         if cmd == "USER"
             if self.allow_anonymous
@@ -400,7 +647,9 @@ class FTP
             self.sendResponse(" REST STREAM")
             response = "211 End"
         elif cmd == "OPTS"
-            if arg == "UTF8"
+            # accept "UTF8", "UTF8 ON", "UTF8 ON NLST", etc.
+            var opt_upper = string.toupper(arg)
+            if string.find(opt_upper, "UTF8") == 0
                 response = "200 UTF Ok"
             else
                 response = f"500 Server does not support {arg}"
@@ -438,63 +687,73 @@ class FTP
             end
         elif cmd == "EPSV"
             self.active_port = nil
+            # refresh data_ip in case WiFi reconnected since init
+            var ip = tasmota.wifi()['ip']
+            if ip != nil && ip != "" && ip != "0.0.0.0"
+                self.data_ip = ip
+            end
             self.initConnectServer()
             response = f"229 Entering Extended Passive Mode (|||{self.data_port}|)"
         elif cmd == "PASV"
             self.active_port = nil
+            # refresh data_ip in case WiFi reconnected since init
+            var ip = tasmota.wifi()['ip']
+            if ip != nil && ip != "" && ip != "0.0.0.0"
+                self.data_ip = ip
+            end
             var el = string.split(self.data_ip,".")
             var hi = self.data_port >> 8
             var lo = self.data_port & 0xff
             self.initConnectServer()
             response = f"227 Entering passive mode ({el[0]},{el[1]},{el[2]},{el[3]},{hi},{lo})"
         elif cmd == "DELE"
-            if path.remove(f"{self.dir.get_url()}{arg}")
+            if !self.is_safe_arg(arg)
+                response = "550 Invalid path"
+            elif path.remove(f"{self.dir.get_url()}{arg}")
                 response = f"250 {self.dir.get_url()}{arg} deleted"
             else
                 response = f"550 Could not delete file {self.dir.get_url()}{arg}"
             end
         elif  cmd == "RMD"
-            var url = arg
-            if arg[0] != "/"
-                url = f"{self.dir.get_url()}{arg}"
-            end
-            if path.rmdir(url)
-                response = f"250 {url} deleted"
+            if !self.is_safe_arg(arg)
+                response = "550 Invalid path"
             else
-                response = f"550 Could not delete folder {url}"
+                var url = arg
+                if arg[0..0] != "/"
+                    url = f"{self.dir.get_url()}{arg}"
+                end
+                if path.rmdir(url)
+                    response = f"250 {url} deleted"
+                else
+                    response = f"550 Could not delete folder {url}"
+                end
             end
         elif cmd == "STOR"
-            self.dataconnect()
-            if self.data_client != nil
-                response = ""
-                var mode = "w"
-                if self.data_ptr > 0
-                    mode = "a"
-                end
-                if self.openFile(arg,mode)
-                    self.data_op = "u"
-                    self.fast_loop = /->self.upload()
-                    tasmota.add_fast_loop(self.fast_loop)
-                else
-                    response = f"550 Could not open file"
-                end
+            if !self.is_safe_arg(arg)
+                response = "550 Invalid path"
             else
-                response = f"501 Could not init data connection"
+                var fname = arg
+                self.dataconnect_start(/-> self.begin_upload(fname))
             end
         elif cmd == "REST"
             self.data_ptr = int(arg)
             response = f"350 {self.data_ptr}"
         elif cmd == "RNFR"
-            if self.openFile(arg,"r")
+            if !self.is_safe_arg(arg)
+                response = "550 Invalid path"
+                self.file_rename = nil
+            elif self.openFile(arg,"r")
                 self.file_rename = f"{self.dir.get_url()}{arg}"
                 response = f"350 {arg}"
                 self.file.close()
+                self.file = nil
             else
                 self.file_rename = nil
                 response = f"550 Could not open file"
             end
         elif cmd == "RNTO"
-            if self.file_rename != nil
+            # UfsRename uses comma as separator -> reject names containing one
+            if self.file_rename != nil && self.is_safe_arg(arg) && string.find(arg, ",") < 0
                 tasmota.cmd(f"UfsRename {self.file_rename},{self.dir.get_url()}{arg}")
                 response = f"250 Renamed {self.file_rename} -> {arg}"
             else
@@ -502,27 +761,23 @@ class FTP
             end
             self.file_rename = nil
         elif cmd == "SIZE"
-            if self.openFile(arg,"r")
+            if !self.is_safe_arg(arg)
+                response = "550 Invalid path"
+            elif self.openFile(arg,"r")
                 response = f"213 {self.file.size()}"
                 self.file.close()
+                self.file = nil
             else
                 response = f"550 Could not open file"
             end
         elif cmd == "RETR"
-            self.dataconnect()
-            if self.data_client != nil
-                if self.openFile(arg,"r")
-                    self.file_size = self.file.size()
-                    self.data_op = "d"
-                    self.fast_loop = /->self.download()
-                    tasmota.add_fast_loop(self.fast_loop)
-                else
-                    response = f"550 Could not open file"
-                end
+            if !self.is_safe_arg(arg)
+                response = "550 Invalid path"
             else
-                response = f"501 Could not init data connection"
+                var fname = arg
+                self.dataconnect_start(/-> self.begin_download(fname))
             end
-        # folder 
+        # folder
         elif cmd == "CDUP"
             self.dir.dir_up()
             response = "250 okay"
@@ -536,25 +791,19 @@ class FTP
             self.readDir()
             response = f"250 {self.dir.get_url()}"
         elif cmd == "MKD"
-            path.mkdir(f"{self.dir.get_url()}{arg}")
-            response = f"250 {self.dir.get_url()}{arg} created"
+            if !self.is_safe_arg(arg)
+                response = "550 Invalid path"
+            else
+                path.mkdir(f"{self.dir.get_url()}{arg}")
+                response = f"250 {self.dir.get_url()}{arg} created"
+            end
         elif cmd == "LIST" || cmd == "MLSD" || cmd == "NLST"
             if arg != ""
                 self.dir.set(arg)
             end
             self.readDir()
-            if self.dataconnect()
-                if size(self.dir_list) > 0
-                    self.data_op = "dir"
-                    self.dir_pos = 0
-                    self.fast_loop = /->self.transferDir(cmd)
-                    tasmota.add_fast_loop(self.fast_loop)
-                else
-                    self.finishTransferDir(true)
-                end
-            else
-                response = f"501 Could not init data connection"
-            end
+            var mode = cmd
+            self.dataconnect_start(/-> self.begin_listdir(mode))
         else # any unknown command
             response = "202 Command not implemented in Berry FTP"
         end
@@ -565,14 +814,12 @@ class FTP
     end
 end
 
-def init(m)
-    import global
-    global.ftp = m
-    var ftp_driver = FTP()
-    tasmota.add_driver(ftp_driver)
-    return m
-  end
-  
-ftp.init = init
+# Auto-start when this file is loaded as a runtime driver.
+# During host-side solidification `tasmota` is stubbed to nil, which
+# short-circuits this branch and prevents FTP.init() from running with
+# missing globals.
+if tasmota
+    var ftp = FTP()
+end
 
-return ftp
+return FTP

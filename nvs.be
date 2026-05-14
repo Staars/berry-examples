@@ -17,12 +17,13 @@ class NC # NVS Constants
         0x48: 'blob_index',
     }
 
+    # ESP-IDF PageState values (see nvs_page.hpp)
     static page_status = {
         0xFFFFFFFF: 'Empty',
         0xFFFFFFFE: 'Active',
         0xFFFFFFFC: 'Full',
-        0xFFFFFFF8: 'Erasing',
-        0x00000000: 'Corrupted',
+        0xFFFFFFF8: 'Erasing',     # FREEING
+        0xFFFFFFF0: 'Corrupted',   # CORRUPT (NOT 0x00000000)
     }
 
     static entry_status = {
@@ -269,36 +270,69 @@ end
 
 class NVS_Blob
     var key
+    var namespace_idx     # numeric NVS namespace index (qualifies the blob)
+    var namespace_name    # resolved later by the inspector (may be nil)
     var total_size
     var expected_chunks
+    var chunk_start       # starting chunk index from blob_index (default 0)
     var index_entry
-    var chunks   # list of {offset, length, index}
+    var chunks   # list of {offset, length, index} -- raw, unfiltered
     var np       # reference to parent NP for access to partition_data
 
-    def init(np, k, total_sz, expected)
+    def init(np, k, ns_idx, total_sz, expected, chunk_start)
         self.np = np
         self.key = k
+        self.namespace_idx = ns_idx
+        self.namespace_name = nil
         self.total_size = total_sz
         self.expected_chunks = expected
+        self.chunk_start = chunk_start != nil ? chunk_start : 0
         self.index_entry = nil
         self.chunks = []
     end
 
+    # Filter chunks to those that belong to the *current* generation
+    # (i.e. chunk index in [chunk_start, chunk_start + expected_chunks)).
+    # Mirrors NVSEditor.buildChunks() in js/nvs-editor.js.
+    def _filtered_chunks()
+        if self.expected_chunks == nil || self.expected_chunks <= 0
+            return self.chunks
+        end
+        var result = []
+        var start = self.chunk_start != nil ? self.chunk_start : 0
+        var ec = self.expected_chunks
+        var i = 0
+        while i < size(self.chunks)
+            var ch = self.chunks[i]
+            var rel = ch["index"] - start
+            if rel >= 0 && rel < ec
+                result.push(ch)
+            end
+            i += 1
+        end
+        return result
+    end
+
+    # Number of *valid* chunks present (after generation filtering)
+    def chunk_count_present()
+        return size(self._filtered_chunks())
+    end
+
     # Return the fully assembled blob by reading from partition_data
     def get_data()
-        var buf = bytes()
+        var chunks = self._filtered_chunks()
 
         # Simple bubble sort by "index" (Berry has no lambda sort)
-        var n = self.chunks.size()
+        var n = chunks.size()
         var swapped = true
         while swapped
             swapped = false
             var i = 0
             while i < n - 1
-                if self.chunks[i]["index"] > self.chunks[i + 1]["index"]
-                    var tmp = self.chunks[i]
-                    self.chunks[i] = self.chunks[i + 1]
-                    self.chunks[i + 1] = tmp
+                if chunks[i]["index"] > chunks[i + 1]["index"]
+                    var tmp = chunks[i]
+                    chunks[i] = chunks[i + 1]
+                    chunks[i + 1] = tmp
                     swapped = true
                 end
                 i += 1
@@ -307,9 +341,10 @@ class NVS_Blob
         end
 
         # Append each chunk's bytes from the shared buffer
+        var buf = bytes()
         var ci = 0
-        while ci < self.chunks.size()
-            var ch = self.chunks[ci]
+        while ci < chunks.size()
+            var ch = chunks[ci]
             buf = buf .. self.np.partition_data[ch["offset"] .. ch["offset"] + ch["length"] - 1]
             ci += 1
         end
@@ -327,6 +362,12 @@ class NVS_Blob
 
     def set_index(entry)
         self.index_entry = entry
+    end
+
+    # Namespace-qualified id, mirroring NVSEditor.getQualifiedBlobId()
+    def qualified_id()
+        var ns = self.namespace_name != nil ? self.namespace_name : f"ns_{self.namespace_idx}"
+        return f"{ns}::{self.key}"
     end
 end
 
@@ -403,14 +444,16 @@ class NVS_Page
                 entry.compute_crc()
             end
 
-            # Blob header/index: ensure blob object exists and update totals if needed
+            # Blob header/index: ensure blob object exists and update totals if needed.
+            # Blob ids are namespace-qualified (mirrors NVSEditor.getQualifiedBlobId)
+            # so two namespaces can hold a blob with the same key without colliding.
             if entry.is_blob() && entry.key != nil
                 self.report_blob(entry)
                 # Inline blob payload inside 'blob' header (small blobs): store as a chunk ref
                 if entry.metadata["type"] == "blob" && entry.state == "Written"
-                    var key = entry.key
-                    if self.np.blob_map.contains(key)
-                        var blob = self.np.blob_map[key]
+                    var qid = self.qualified_id(entry.metadata["namespace"], entry.key)
+                    if self.np.blob_map.contains(qid)
+                        var blob = self.np.blob_map[qid]
                         var chunk_size = entry.data && entry.data["size"] != nil ? entry.data["size"] : 0
                         if chunk_size > 0
                             var inline_off = entry_off + 24
@@ -423,16 +466,18 @@ class NVS_Page
 
             # Blob data: always register chunk refs zero-copy, creating blob if missing
             if entry.is_blob_data() && entry.state == "Written" && entry.key != nil
+                var ns_idx = entry.metadata["namespace"]
+                var qid = self.qualified_id(ns_idx, entry.key)
                 # Ensure blob exists (if header/index not parsed yet, create provisional)
-                if !self.np.blob_map.contains(entry.key)
+                if !self.np.blob_map.contains(qid)
                     var provisional_total = entry.blob_total_size()  # for blob_data this is chunk size; may be updated later
                     var provisional_chunks = entry.blob_expected_chunks()  # likely 0 for blob_data; updated by blob_index later
-                    var new_blob = NVS_Blob(self.np, entry.key, provisional_total, provisional_chunks)
+                    var new_blob = NVS_Blob(self.np, entry.key, ns_idx, provisional_total, provisional_chunks, 0)
                     self.np.blobs.push(new_blob)
-                    self.np.blob_map[entry.key] = new_blob
+                    self.np.blob_map[qid] = new_blob
                 end
 
-                var blob2 = self.np.blob_map[entry.key]
+                var blob2 = self.np.blob_map[qid]
                 # Compute payload range: (span - 1) payload entries, each NC.entry_size bytes
                 var payload_offset = entry_off + NC.entry_size
                 var payload_length = (span - 1) * NC.entry_size
@@ -442,6 +487,9 @@ class NVS_Page
                 end
                 var chunk_index = entry.metadata["chunk_index"] & 127
                 if payload_length > 0
+                    # Filtering by [chunk_start, chunk_start + expected_chunks) is
+                    # done lazily in NVS_Blob._filtered_chunks() because the
+                    # blob_index entry might be parsed AFTER the blob_data chunks.
                     blob2.add_chunk_ref(payload_offset, payload_length, chunk_index)
                 end
             end
@@ -450,25 +498,46 @@ class NVS_Page
         end
     end
 
+    # Build a namespace-qualified blob id.
+    # Mirrors NVSEditor.getQualifiedBlobId() in js/nvs-editor.js.
+    def qualified_id(ns_idx, key)
+        return f"ns_{ns_idx}::{key}"
+    end
+
     def report_blob(entry)
+        var ns_idx = entry.metadata["namespace"]
         var key = entry.blob_key()
-        if self.np.blob_map.contains(key)
+        var qid = self.qualified_id(ns_idx, key)
+        var new_total = entry.blob_total_size()
+        var new_expected = entry.blob_expected_chunks()
+        # blob_index entries carry the chunk_start; legacy blob/blob_data don't.
+        var new_chunk_start = (entry.data != nil && entry.data.contains("chunk_start") && entry.data["chunk_start"] != nil) ? entry.data["chunk_start"] : nil
+
+        if self.np.blob_map.contains(qid)
             # Update totals if header/index provides better information
-            var existing = self.np.blob_map[key]
-            var new_total = entry.blob_total_size()
-            var new_expected = entry.blob_expected_chunks()
+            var existing = self.np.blob_map[qid]
             if new_total != nil && new_total > 0
                 existing.total_size = new_total
             end
             if new_expected != nil && new_expected > 0
                 existing.expected_chunks = new_expected
             end
+            if new_chunk_start != nil
+                existing.chunk_start = new_chunk_start
+            end
+            if entry.metadata["type"] == "blob_index"
+                existing.set_index(entry)
+            end
             return
         end
+
         # Create blob using header/index info
-        var blob = NVS_Blob(self.np, entry.blob_key(), entry.blob_total_size(), entry.blob_expected_chunks())
+        var blob = NVS_Blob(self.np, key, ns_idx, new_total, new_expected, new_chunk_start)
+        if entry.metadata["type"] == "blob_index"
+            blob.set_index(entry)
+        end
         self.np.blobs.push(blob)
-        self.np.blob_map[key] = blob
+        self.np.blob_map[qid] = blob
     end
 end
 
@@ -842,12 +911,27 @@ class NVSInspector
         namespaces[entry.data["value"]] = entry.key
     end
 
+    # Resolve namespace_name on each blob from collected namespace map.
+    # Done here rather than at parse time because namespace defs may be parsed
+    # AFTER blobs in different pages.
+    def _resolve_blob_namespaces(blobs, namespaces)
+        var i = 0
+        while i < size(blobs)
+            var b = blobs[i]
+            if b.namespace_name == nil && b.namespace_idx != nil
+                b.namespace_name = namespaces.find(b.namespace_idx, nil)
+            end
+            i += 1
+        end
+    end
+
     # Check blob completeness for stats. Returns nothing (just updates self.stats).
+    # Uses the *filtered* chunk count (matches NVSEditor.checkBlobIntegrity).
     def _check_blob_integrity(blobs)
         var i = 0
         while i < size(blobs)
             var b = blobs[i]
-            var present = b.chunks != nil ? size(b.chunks) : 0
+            var present = b.chunk_count_present()
             var expected = b.expected_chunks != nil ? b.expected_chunks : 0
             if expected > 0
                 if present >= expected
@@ -873,9 +957,9 @@ class NVSInspector
             var i = 0
             while i < size(blobs)
                 var b = blobs[i]
-                var key = b.key != nil ? b.key : "<unknown>"
+                var qid = b.qualified_id()
                 var total = b.total_size != nil ? b.total_size : 0
-                var present = b.chunks != nil ? size(b.chunks) : 0
+                var present = b.chunk_count_present()
                 var expected = b.expected_chunks != nil ? b.expected_chunks : 0
                 var status
                 if expected > 0
@@ -883,7 +967,7 @@ class NVSInspector
                 else
                     status = present > 0 ? "OK" : "EMPTY"
                 end
-                print(f"  Key: {key:16s} TotalSize: {total:8d}\tChunks: {present}/{expected}\t{status}")
+                print(f"  {qid:24s} TotalSize: {total:8d}\tChunks: {present}/{expected}\t{status}")
                 if loglevel > 3
                     var payload = b.get_data()
                     print("  Hexdump:")
@@ -898,6 +982,8 @@ class NVSInspector
     end
 
     def _print_integrity(loglevel)
+        # Resolve blob namespace names from the namespace map (best effort)
+        self._resolve_blob_namespaces(self.nvs.blobs, self.namespaces)
         # Update blob stats once, just before printing
         self._check_blob_integrity(self.nvs.blobs)
 
@@ -924,6 +1010,10 @@ class NVSInspector
     end
 
     def _print_summary(namespaces, blobs, loglevel)
+        # Resolve blob namespace names so qualified ids print as 'wifi::config'
+        # rather than 'ns_3::config'. (Mirrors NVSEditor's qualified blob id.)
+        self._resolve_blob_namespaces(blobs, namespaces)
+
         if loglevel < 1
             self._print_integrity(loglevel)
             return

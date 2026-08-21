@@ -32,11 +32,10 @@ class DEMO_GRAPH_WIDGET : Driver
       self.initialized = true
       return
     end
-  end
-
-  def web_add_handler()
-    import webserver
-    webserver.on("/m32_graph", /->self.send_data(), webserver.HTTP_GET)
+    if webserver.has_arg("data")
+      self.send_data()
+      return
+    end
   end
 
   def update_data()
@@ -48,7 +47,6 @@ class DEMO_GRAPH_WIDGET : Driver
 
     def send_data()
         import webserver
-        if !webserver.check_privileged_access() return end
         self.update_data()
         var current = self.data_buffer[size(self.data_buffer)-1]
         var sum = 0
@@ -89,7 +87,7 @@ class DEMO_GRAPH_WIDGET : Driver
         'if(!window.demoGraphInit){'
         'window.demoGraphInit = true;'
         'window.updateDemoGraph = function(){'
-        'fetch("/m32_graph").then(r=>r.json()).then(data=>{'
+        'fetch("/m32?data=1").then(r=>r.json()).then(data=>{'
         'eb("graph_area").innerHTML = render(data.graph);'
         'eb("current").textContent = data.current;'
         'eb("avg").textContent = data.avg.toFixed(1);'
@@ -105,8 +103,6 @@ class DEMO_GRAPH_WIDGET : Driver
   end
 
   def stop()
-    import webserver
-    webserver.on("/m32_graph", nil)
     tasmota.remove_driver(self)
   end
 end

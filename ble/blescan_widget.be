@@ -27,8 +27,15 @@ class SCAN_WIDGET : Driver
 
   def stop()
       import BLE
+      import webserver
       BLE.adv_cb(nil)
+      webserver.on("/m32_scan", nil)
       tasmota.remove_driver(self)
+  end
+
+  def web_add_handler()
+      import webserver
+      webserver.on("/m32_scan", /->self.ajax_cb(), webserver.HTTP_GET)
   end
 
   def cb(svc,man)
@@ -62,8 +69,15 @@ class SCAN_WIDGET : Driver
           self.init_step = 3
         end
         return
-      elif self.init_step == 3
-        if webserver.has_arg("init") == true
+      end
+  end
+
+  def ajax_cb()
+      import webserver
+      if !webserver.check_privileged_access() return end
+
+      if webserver.has_arg("init")
+        if self.init_step == 3
           if self.ble_down == true
             import BLE
             log("M32: web UI did init",2)
@@ -71,13 +85,9 @@ class SCAN_WIDGET : Driver
             BLE.adv_cb(cbp,self.buf)
             self.ble_down = false
           end
-          webserver.content_response('{\"OK\":[]}')
           self.init_step = 4
         end
-        return
-      end
-
-      if webserver.has_arg("loop")
+      elif webserver.has_arg("loop")
         if self.stop_scan == false
             self.scan_timer = 1
         end
@@ -96,9 +106,7 @@ class SCAN_WIDGET : Driver
             tasmota.cmd("mi32option4 0")
         end
       end
-      if webserver.has_arg("wi") == false
-          webserver.content_response('{\"OK\":[]}')
-      end
+      webserver.content_response('{\"OK\":[]}')
       return
   end
 
@@ -197,7 +205,7 @@ def upl_js()
   import MI32
   var script =    "<script id='sc_script'>var igCC,igCV,igRC,igRV,igTC,igTV,fiSUC,fiSUV,fiSDC,fiSDV,tab;"
                   "function upd_ble_scan(cmnd){"
-                    "fetch('/m32?'+cmnd).then(r=>r.json())"
+                    "fetch('/m32_scan?'+cmnd).then(r=>r.json())"
                     ".then(r=>{if('body' in r){tab=r;updTable();beat('hbeat');}})"
                     ".catch(err=>{console.log(err);});"
                   "};"

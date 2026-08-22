@@ -4,10 +4,11 @@
     
         def init(MAC)
             import BLE
+            import cb
             self.buf = bytes(-21) # create a byte buffer, first byte reserved for length info
             self.buf[0] = 20 # length of the data part of the buffer in bytes
             self.buf[1] = 0x33 # a magic number - control byte for the Govee lamp
-            var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u)) # create a callback function pointer
+            var cbp = cb.gen_cb(/e,o,u->self.cb(e,o,u)) # create a callback function pointer
             BLE.conn_cb(cbp,self.buf)
             BLE.set_MAC(bytes(MAC),1) # addrType: 1 (random)
         end

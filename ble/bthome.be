@@ -7,7 +7,8 @@ class BTHOME : Driver
     var temperature, humidity, name
 
     def init()
-        var cbp = tasmota.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
+        import cb
+        var cbp = cb.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
         BLE.serv_cb(cbp,cbuf)
         self.current_func = /->self.update_ADV()
         self.name = "Tas BTHome"

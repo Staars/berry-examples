@@ -5,7 +5,8 @@ class BLE_INFO : Driver
     var services
 
     def init(MAC,addr_type)
-        var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
+        import cb
+        var cbp = cb.gen_cb(/e,o,u->self.cb(e,o,u))
         self.buf = bytes(-256)
         BLE.conn_cb(cbp,self.buf)
         tasmota.add_driver(self)

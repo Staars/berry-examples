@@ -67,8 +67,9 @@ class LD2410 : Driver
 
     def init(MAC)
         import BLE
+        import cb
         self.buf = bytes(-48)
-        var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u)) # create a callback function pointer
+        var cbp = cb.gen_cb(/e,o,u->self.cb(e,o,u)) # create a callback function pointer
         self.moving_sensitivity = bytes(-(self.MAX_GATES + 1))
         self.static_sensitivity = bytes(-(self.MAX_GATES + 1))
         BLE.conn_cb(cbp,self.buf)

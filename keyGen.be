@@ -83,7 +83,8 @@ class MI32_keyGen_UI
 
     def init()
         import BLE
-        var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
+        import cb
+        var cbp = cb.gen_cb(/e,o,u->self.cb(e,o,u))
         self.buf = bytes(-64)
         BLE.conn_cb(cbp,self.buf)
         self.current_func = self.wait

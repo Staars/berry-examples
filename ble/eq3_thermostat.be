@@ -69,8 +69,9 @@ class EQ3BTSmart : Driver
     
     def init(MAC, pin)
         import BLE
+        import cb
         self.buf = bytes(-64)
-        var cbp = tasmota.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
+        var cbp = cb.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
         
         self.mac_address = MAC
         self.is_connected = false

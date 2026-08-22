@@ -7,7 +7,8 @@ class BLE_TRIONES : Driver
     var connected, requestStatus
 
     def init(MAC,addr_type)
-        var cbp = tasmota.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
+        import cb
+        var cbp = cb.gen_cb(/e,o,u,h->self.cb(e,o,u,h))
         self.buf = bytes(-256)
         BLE.conn_cb(cbp,self.buf)
         self.connected = false

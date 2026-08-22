@@ -5,7 +5,8 @@
 
         def init(MAC)
             import BLE
-            var cbp = tasmota.gen_cb(/e,o,u->self.cb(e,o,u))
+            import cb
+            var cbp = cb.gen_cb(/e,o,u->self.cb(e,o,u))
             self.buf = bytes(-256)
             BLE.conn_cb(cbp,self.buf)
             BLE.set_MAC(bytes(bytes(MAC)),0)

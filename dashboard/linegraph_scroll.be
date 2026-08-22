@@ -8,13 +8,14 @@ class DEMO_GRAPH_WIDGET : Driver
 
   def init()
     import MI32
+    import cb
     self.initialized = false
     self.data_buffer = []
     # Initialize with some random data
     for i: 0..(self.BUFFER_SIZE-1)
       self.data_buffer.push(0)
     end
-    var cbp = tasmota.gen_cb(/->self.widget_cb())
+    var cbp = cb.gen_cb(/->self.widget_cb())
     MI32.widget("", cbp)
     tasmota.add_driver(self)
   end

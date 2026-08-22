@@ -23,13 +23,14 @@ class BLE_scan_UI
 
     def init()
         import BLE
+        import cb
         self.buf = bytes(-64)
         self.scan_timer = 0
         self.scan_result = []
         self.stop_scan = false
         self.active_scan = tasmota.cmd("mi32option4")
 
-        var cbp = tasmota.gen_cb(/svc,man -> self.cb(svc,man))
+        var cbp = cb.gen_cb(/svc,man -> self.cb(svc,man))
         BLE.adv_cb(cbp,self.buf)
     end
 

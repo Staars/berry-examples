@@ -11,6 +11,7 @@ class SCAN_WIDGET : Driver
   def init()
       import BLE
       import MI32
+      import cb
       self.buf = bytes(-96)
       self.scan_timer = 0
       self.scan_result = []
@@ -19,7 +20,7 @@ class SCAN_WIDGET : Driver
       self.init_step = 0
       self.ble_down = true
 
-      var cbp = tasmota.gen_cb(/->self.widget_cb())
+      var cbp = cb.gen_cb(/->self.widget_cb())
       MI32.widget("",cbp)
       tasmota.add_driver(self)
   end
@@ -55,8 +56,9 @@ class SCAN_WIDGET : Driver
         if webserver.has_arg("init") == true
           if self.ble_down == true
             import BLE
+            import cb
             log("M32: web UI did init",2)
-            var cbp = tasmota.gen_cb(/svc,man -> self.cb(svc,man))
+            var cbp = cb.gen_cb(/svc,man -> self.cb(svc,man))
             BLE.adv_cb(cbp,self.buf)
             self.ble_down = false
           end
